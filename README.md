@@ -26,29 +26,18 @@ serial bridge and implements the motor payload formats used by the firmware
 
 1. Install Python 3.12 and verify it is available on `PATH`:
 
-```powershell
+```powershe
 python --version
 ```
 
 2. Create and activate a virtual environment (PowerShell):
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```powershe
+python -m venv venv
+\venv\Scripts\Activate.ps1
 ```
 
-If you prefer CMD.exe:
 
-```cmd
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-3. Install Python dependencies:
-
-```powershell
-pip install -r requirement.txt
-```
 
 ## Configuration
 
