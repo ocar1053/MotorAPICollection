@@ -84,7 +84,7 @@ class SerialCanListener:
                 self._cur = motr_cur
                 self._cur_temp = temp
                 self._error = err
-            self.ser.read(1)  # 讀取最後的結尾 byte
+            self.ser.read(1)  # Consume the trailing end byte (0x55)
 
     def get_status(self):
         """
@@ -103,11 +103,10 @@ class SerialCanListener:
 
 
 def calc_extid(control_mode_id: int, motor_id: int):
-    """
-    cal 29-bit extended ID for CAN frame.
+    """Calculate the 29-bit extended CAN ID used by the bridge.
 
-    28-8 bit control mode ID
-    7-0  bit motor ID
+    The ID format places the control mode ID in bits 8..28 and the motor ID
+    in the lowest 8 bits (bits 0..7).
     """
 
     ex_id = (control_mode_id << 8) | (motor_id & 0xFF)
@@ -173,20 +172,20 @@ def pack_cmd_mit_mode_data(position: float, velocity: float, torque: float, kp: 
     # DATA[1] = pos low 8
     data[1] = p_int & 0xFF
 
-    # DATA[2] = v high 8
+    # DATA[2] = velocity high 8 bits
     data[2] = (v_int >> 8) & 0xFF
-    # DATA[3] bits7-4：v low 4 ；bits3-0：KP high 4
+    # DATA[3] bits7-4: velocity low 4 bits; bits3-0: KP high 4 bits
     data[3] = ((v_int & 0xF) << 4) | ((kp_int >> 8) & 0xF)
 
-    # DATA[4] = KP low 8
+    # DATA[4] = KP low 8 bits
     data[4] = kp_int & 0xFF
 
-    # DATA[5] = KD high 8
+    # DATA[5] = KD high 8 bits
     data[5] = (kd_int >> 4) & 0xFF
-    # DATA[6] bits7-4：KD low 4 ；bits3-0 i high 4
+    # DATA[6] bits7-4: KD low 4 bits; bits3-0: torque high 4 bits
     data[6] = ((kd_int & 0xF) << 4) | ((torque_int >> 8) & 0xF)
 
-    # DATA[7] = i low 8
+    # DATA[7] = torque low 8 bits
     data[7] = torque_int & 0xFF
 
     return data

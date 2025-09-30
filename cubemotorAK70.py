@@ -2,7 +2,7 @@ import threading
 import serial
 from cubemotorAK70Util import *
 
-CAN_BAUDRATE = 2000000  # CAN 通訊速率
+CAN_BAUDRATE = 2000000  # CAN bus bitrate (bits/s)
 CAN_TIMEOUT = 5
 
 
@@ -15,8 +15,8 @@ def main():
 
         frame = [
             0xaa, 0x55, 0x12,
-            0x01,  # CAN speed: 1m
-            0x02,  # extened frame
+            0x01,  # CAN speed: 1M (1 megabit/s)
+            0x02,  # extended frame
             0x00, 0x00, 0x00, 0x00,  # Filter ID
             0x00, 0x00, 0x00, 0x00,  # Mask ID
             0x00,  # Normal mode
@@ -28,14 +28,14 @@ def main():
 
         time.sleep(0.1)  # wait for the frame to be sent
     except Exception as e:
-        print(f"fail：{e}")
+        print(f"Failed: {e}")
         return
 
     # 2 make sure the serial port is open
     if not ser.is_open:
         print("Failed to open serial port.")
         return
-    # open serial listener
+    # start serial listener
     listener = SerialCanListener(ser)
     servo_mod_set_zero(ser, control_mode_id=5, motor_id=93)
     print("set to zero")

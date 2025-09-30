@@ -1,5 +1,6 @@
 import threading
 import serial
+import time
 from xiaomiMotorUtil import *
 
 CAN_BAUDRATE = 2000000
@@ -7,18 +8,22 @@ CAN_TIMEOUT = 0.1
 
 
 def position_reader_thread(ser, stop_event):
-    """
-    這個函式會持續在 background thread 執行，不斷呼叫 read_current_position，
-    並把讀到的位置印出來。若 stop_event 被設定，就跳出迴圈結束執行緒。
+    """Background thread that continuously reads motor position and prints it.
+
+    The loop repeatedly calls ``read_current_position(ser)`` and prints the
+    telemetry when available. The thread exits when ``stop_event`` is set by
+    the main thread.
     """
     while not stop_event.is_set():
         result = read_current_position(ser)
         if result is not None:
             rad, deg = result
-            print(f"[Reader] 目前角度 (rad) = {rad:.6f}, (deg) = {deg:.2f}")
-        # 間隔時間可依實際需求調整——這裡先 sleep 0.05 秒左右
+            print(
+                f"[Reader] Current angle (rad) = {rad:.6f}, (deg) = {deg:.2f}")
+        # Small sleep to avoid busy-waiting; adjust as needed
+        time.sleep(0.05)
 
-    print("[Reader] 收到停止訊號，結束讀取執行緒。")
+    print("[Reader] Stop signal received, exiting reader thread.")
 
 
 def main():
@@ -26,7 +31,7 @@ def main():
     # 1. open serial port
     try:
         ser = serial.Serial('COM11', CAN_BAUDRATE, timeout=CAN_TIMEOUT)
-        time.sleep(0.1)  # wait for serial port to initialize
+        time.sleep(0.1)  # allow the serial port to initialize
 
         frame = [
             0xaa, 0x55, 0x12,
@@ -43,21 +48,21 @@ def main():
 
         time.sleep(0.1)  # wait for the frame to be sent
     except Exception as e:
-        print(f"fail：{e}")
+        print(f"Failed: {e}")
         return
 
     # 2 make sure the serial port is open
     if not ser.is_open:
         print("Failed to open serial port.")
         return
-    # 2. 建立 Event 讓我們可以通知 reader thread 停止
+    # 2. Create an Event to notify the reader thread to stop
     stop_event = threading.Event()
 
-    # 3. 建立並啟動 position_reader_thread
+    # 3. Create and start the position_reader_thread
     reader_thread = threading.Thread(
         target=position_reader_thread,
         args=(ser, stop_event),
-        daemon=True   # daemon=True 表示程式結束時自動結束此執行緒
+        daemon=True,  # daemon=True makes the thread exit automatically when the program ends
     )
     reader_thread.start()
     # bussiness logic
@@ -135,8 +140,9 @@ def main():
         #     target_postion += 0.01
         #     time.sleep(0.01)
         print("Motor control completed.")
-        while 1:
-            pass
+        # Keep the main thread alive; replace with your application loop
+        while True:
+            time.sleep(1)
     finally:
         stop_event.set()        # 設定 Event，讓 position_reader_thread 跳出迴圈
         reader_thread.join()    # 等待讀取執行緒真正結束
