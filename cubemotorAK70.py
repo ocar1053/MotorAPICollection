@@ -10,7 +10,7 @@ def main():
     target_postion = 0
     # 1. open serial port
     try:
-        ser = serial.Serial('COM11', CAN_BAUDRATE, timeout=CAN_TIMEOUT)
+        ser = serial.Serial('COM5', CAN_BAUDRATE, timeout=CAN_TIMEOUT)
         time.sleep(0.1)  # wait for serial port to initialize
 
         frame = [

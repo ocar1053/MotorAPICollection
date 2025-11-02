@@ -61,12 +61,12 @@ TEMP_GAIN = 0.1
 # CAN extended frame flag
 CAN_EFF_FLAG = 0x80000000
 
-# π 常數
+# π 
 PI = math.pi
 
 
 # ============================================
-# 3. 工具函式：浮點數↔位元組、映射、計算 ExtID、封裝 data
+# 3. Helper functions
 # ============================================
 
 def float_to_bytes(f: float) -> bytes:
@@ -123,15 +123,15 @@ def data_count_dcs(index: int, value, value_type: str) -> bytes:
         value_type: 'f' for float (packed as 4 bytes, reversed order), 's' for 8-bit integer
     """
     buf = bytearray(8)
-    # 前兩 bytes 儲存 index (低位在 buf[0], 高位在 buf[1])
+   
     buf[0] = index & 0xFF
     buf[1] = (index >> 8) & 0xFF
     buf[2] = 0x00
     buf[3] = 0x00
 
     if value_type == 'f':
-        fb = float_to_bytes(float(value))   # 4 bytes 大端
-        # C++ 版本放 byte_ls[3], byte_ls[2], byte_ls[1], byte_ls[0]
+        fb = float_to_bytes(float(value))  
+       
         buf[4] = fb[3]
         buf[5] = fb[2]
         buf[6] = fb[1]
@@ -190,9 +190,6 @@ def motor_enable(ser, motor_id: int = DEFAULT_CAN_ID):
 
 def motor_mode(ser, motor_id: int, mode_type: int):
     """Set the motor control mode.
-
-    Corresponds to the C++ sequence that writes the RUN_MODE parameter.
-
     mode_type values:
       0 = motion control mode
       1 = position mode
@@ -212,7 +209,7 @@ def motor_yk(ser, motor_id: int,
              speed: float,
              kp: float,
              kd: float):
-    """Send a motion control command (equivalent to send_control_command in C++).
+    """Send a motion control command 
 
     The constructed ExtID and payload encode torque, motor ID, position,
     speed, Kp and Kd according to the original firmware protocol.

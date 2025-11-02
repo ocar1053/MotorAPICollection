@@ -30,7 +30,7 @@ def main():
     target_postion = 0
     # 1. open serial port
     try:
-        ser = serial.Serial('COM11', CAN_BAUDRATE, timeout=CAN_TIMEOUT)
+        ser = serial.Serial('COM5', CAN_BAUDRATE, timeout=CAN_TIMEOUT)
         time.sleep(0.1)  # allow the serial port to initialize
 
         frame = [
@@ -68,84 +68,34 @@ def main():
     # bussiness logic
     try:
         # # motor1
-        motor_enable(ser, 1)
-        motor_pos_zero(ser, 1)
-        motor_mode(ser, 1, 0)
+        motor_enable(ser, 127)
+        motor_pos_zero(ser, 127)
+        motor_mode(ser, 127, 0)
         time.sleep(0.1)  # wait for motor to initialize
 
-        motor_enable(ser, 2)
-        motor_pos_zero(ser, 2)
-        motor_mode(ser, 2, 0)
-        target_postion = 0
-        while target_postion <= 1.56:
-            motor_yk(
-                ser, 1, 1, target_postion, 1, 10, 0.5)
-            motor_yk(
-                ser, 2, 1, target_postion, 1, 10, 0.5)
-            target_postion += 0.03
-            time.sleep(0.0003)
-        # back to 0 -= 0.01
-        target_postion = 1.56
-        while target_postion >= 0.2:
-            motor_yk(
-                ser, 1, 1, target_postion, 1, 10, 0.5)
-            motor_yk(
-                ser, 2, 1, target_postion, 1, 10, 0.5)
-            target_postion -= 0.03
-            time.sleep(0.0003)
-        time.sleep(1)
-        # repeat the above process
-        target_postion = 0.2
-        while target_postion <= 1.56:
-            motor_yk(
-                ser, 1, 1, target_postion, 1, 10, 0.5)
-            motor_yk(
-                ser, 2, 1, target_postion, 1, 10, 0.5)
-            target_postion += 0.03
-            time.sleep(0.0003)
-        # back to 0 -= 0.01
-        target_postion = 1.56
-        while target_postion >= 0.2:
-            motor_yk(
-                ser, 1, 1, target_postion, 1, 10, 0.5)
-            motor_yk(
-                ser, 2, 1, target_postion, 1, 10, 0.5)
-            target_postion -= 0.03
-            time.sleep(0.0003)
-
-        time.sleep(1)
-        target_postion = 0.2
-
-        while target_postion <= 1.56:
-            motor_yk(
-                ser, 1, 1, target_postion, 1, 10, 0.5)
-            motor_yk(
-                ser, 2, 1, target_postion, 1, 10, 0.5)
-            target_postion += 0.03
-            time.sleep(0.0003)
-        # back to 0 -= 0.01
-        target_postion = 1.56
-        while target_postion >= 0.2:
-            motor_yk(
-                ser, 1, 1, target_postion, 1, 10, 0.5)
-            motor_yk(
-                ser, 2, 1, target_postion, 1, 10, 0.5)
-            target_postion -= 0.03
-            time.sleep(0.0003)
-
-        # target_postion = 0
-        # while target_postion <= 1.56:
-        #     motor_yk(
-        #         ser, 2, 0, target_postion, 1, 10, 0.5)
-        #     target_postion += 0.01
-        #     time.sleep(0.01)
+        while True:
+            target_postion = 0
+            while target_postion <= 1.56:
+                motor_yk(
+                    ser, 127, 1, target_postion, 1, 10, 0.5)
+                target_postion += 0.03
+                time.sleep(0.0003)
+            # back to 0 -= 0.01
+            target_postion = 1.56
+            while target_postion >= 0.2:
+                motor_yk(
+                    ser, 127, 1, target_postion, 1, 10, 0.5)
+                target_postion -= 0.03
+                time.sleep(0.0003)
+            time.sleep(1)
+ 
         print("Motor control completed.")
         # Keep the main thread alive; replace with your application loop
         while True:
             time.sleep(1)
     finally:
-        stop_event.set()        # 設定 Event，讓 position_reader_thread 跳出迴圈
-        reader_thread.join()    # 等待讀取執行緒真正結束
+        stop_event.set()        
+        reader_thread.join()    
         if ser.is_open:
             ser.close()
 
