@@ -16,6 +16,12 @@ KP_MIN = 0.0
 KP_MAX = 500.0
 KD_MIN = 0.0
 KD_MAX = 5.0
+POS_DEG_MIN = -36000.0
+POS_DEG_MAX = 36000.0
+SPEED_ERPM_MIN = -327680
+SPEED_ERPM_MAX = 327670
+RPA_MIN = 0
+RPA_MAX = 327670
 
 
 class SerialCanListener:
@@ -216,6 +222,10 @@ def servo_mod_pos_speed(ser, control_mode_id: int, motor_id: int, pos_deg: float
     speed_erpm arg accept -327680~-327680 (erpm)
     rpa arg accept accept 0~327670 1 unit is equal to 10 electrical speed/s².
     """
+    pos_deg = min(max(pos_deg, POS_DEG_MIN), POS_DEG_MAX)
+    speed_erpm = min(max(speed_erpm, SPEED_ERPM_MIN), SPEED_ERPM_MAX)
+    rpa = min(max(rpa, RPA_MIN), RPA_MAX)
+
     pos_int = int(pos_deg * 10000.0)
     spd_int = int(speed_erpm / 10.0)
     rpa_int = int(rpa / 10.0)
@@ -244,6 +254,8 @@ def servo_mod_pos(ser,  control_mode_id: int, motor_id: int, pos_deg: float = 0.
     pos_deg arg accept -36000 to 36000 (degree) 
 
     """
+
+    pos_deg = min(max(pos_deg, POS_DEG_MIN), POS_DEG_MAX)
 
     # strech to
     val = int(pos_deg * 10000.0)

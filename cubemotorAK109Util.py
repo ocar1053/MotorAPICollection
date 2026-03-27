@@ -16,9 +16,14 @@ KP_MIN = 0.0
 KP_MAX = 500.0
 KD_MIN = 0.0
 KD_MAX = 5.0
+POS_DEG_MIN = -36000.0
+POS_DEG_MAX = 36000.0
+SPEED_ERPM_MIN = -327680
+SPEED_ERPM_MAX = 327670
+RPA_MIN = 0
+RPA_MAX = 327670
 
 
-motor_dic = {}
 class SerialCanListener:
 
     def __init__(self, ser, can_id: int = 0x00):
@@ -34,6 +39,7 @@ class SerialCanListener:
         self._cur_temp = 0
         self._error = 0
         self._running = True
+        self._motor_dic = {}
         self._th = threading.Thread(target=self._read_loop, daemon=True)
         
 
@@ -87,7 +93,7 @@ class SerialCanListener:
                 self._cur = motr_cur
                 self._cur_temp = temp
                 self._error = err
-                motor_dic[can_id & 0xFF] = {
+                self._motor_dic[can_id & 0xFF] = {
                     "position": motr_pos,
                     "speed": motr_spd,
                     "current": motr_cur,
@@ -102,7 +108,7 @@ class SerialCanListener:
         Returns a tuple of (position, speed, current, temperature, error).
         """
         with self._lock:
-            return motor_dic
+            return dict(self._motor_dic)
 
     def close(self):
         """
@@ -226,6 +232,10 @@ def servo_mod_pos_speed(ser, control_mode_id: int, motor_id: int, pos_deg: float
     speed_erpm arg accept -327680~-327680 (erpm)
     rpa arg accept accept 0~327670 1 unit is equal to 10 electrical speed/s².
     """
+    pos_deg = min(max(pos_deg, POS_DEG_MIN), POS_DEG_MAX)
+    speed_erpm = min(max(speed_erpm, SPEED_ERPM_MIN), SPEED_ERPM_MAX)
+    rpa = min(max(rpa, RPA_MIN), RPA_MAX)
+
     pos_int = int(pos_deg * 10000.0)
     spd_int = int(speed_erpm / 10.0)
     rpa_int = int(rpa / 10.0)
@@ -254,6 +264,8 @@ def servo_mod_pos(ser,  control_mode_id: int, motor_id: int, pos_deg: float = 0.
     pos_deg arg accept -36000 to 36000 (degree) 
 
     """
+
+    pos_deg = min(max(pos_deg, POS_DEG_MIN), POS_DEG_MAX)
 
     # strech to
     val = int(pos_deg * 10000.0)

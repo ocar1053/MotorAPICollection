@@ -1,16 +1,22 @@
-import threading
+import time
+
 import serial
+
 from cubemotorAK70Util import *
 
 CAN_BAUDRATE = 2000000  # CAN bus bitrate (bits/s)
 CAN_TIMEOUT = 5
+SERIAL_PORT = "COM12"
+MOTOR_ID = 93
+TARGET_SEQUENCE_DEG = [0, 10, 20, 10, 0, -10, -20, -10, 0]
+POSITION_SPEED_ERPM = 2000
+POSITION_ACCEL_ERPM_S = 5000
 
 
 def main():
-    target_postion = 0
     # 1. open serial port
     try:
-        ser = serial.Serial('COM12', CAN_BAUDRATE, timeout=CAN_TIMEOUT)
+        ser = serial.Serial(SERIAL_PORT, CAN_BAUDRATE, timeout=CAN_TIMEOUT)
         time.sleep(0.1)  # wait for serial port to initialize
 
         frame = [
@@ -35,46 +41,36 @@ def main():
     if not ser.is_open:
         print("Failed to open serial port.")
         return
+
     # start serial listener
     listener = SerialCanListener(ser)
-    servo_mod_set_zero(ser, control_mode_id=5, motor_id=93)
+    servo_mod_set_zero(ser, control_mode_id=5, motor_id=MOTOR_ID)
     print("set to zero")
 
     time.sleep(1)  # wait for the motor to set to zero
     pos, spd, cur, temp, err, can_id = listener.get_status()
     print(
-        f"Position: {pos}, Speed: {spd}, Current: {cur}, Temperature: {temp}, Error: {err}, can_id: {can_id} ")
+        f"Position: {pos}, Speed: {spd}, Current: {cur}, "
+        f"Temperature: {temp}, Error: {err}, can_id: {can_id} "
+    )
     time.sleep(1)
-    v = 0
+
     try:
-        # speed control mode test
-        # while 1:
-        #     target_postion = 3600
-        #     servo_mod_pos_speed(ser, control_mode_id=6,
-        #                         motor_id=93, pos_deg=target_postion, speed_erpm=10000, rpa=30000)
-
-        #     pos, spd, cur, temp, err, can_id = listener.get_status()
-        #     print(
-        #         f"Position: {pos}, Speed: {spd}, Current: {cur}, Temperature: {temp}, Error: {err}, CAN ID: {can_id}")
-        #     time.sleep(1)
-
-        # speed control mode test
-        while 1:
-
-            # if v % 2 == 0:
-            #     target_postion = 25.122
-            # else:
-            #     target_postion = -25.122
-            target_postion = 36000
-            # servo_mod_pos(ser, control_mode_id=4,
-            #               motor_id=93, pos_deg=target_postion)
-            servo_mod_pos_speed(ser, control_mode_id=6,
-                            motor_id=93, pos_deg=target_postion, speed_erpm=327680, rpa=327670)
-            v += 1
-            time.sleep(0.0001)
+        for target_position in TARGET_SEQUENCE_DEG:
+            servo_mod_pos_speed(
+                ser,
+                control_mode_id=6,
+                motor_id=MOTOR_ID,
+                pos_deg=target_position,
+                speed_erpm=POSITION_SPEED_ERPM,
+                rpa=POSITION_ACCEL_ERPM_S,
+            )
+            time.sleep(1.5)
             pos, spd, cur, temp, err, can_id = listener.get_status()
             print(
-                f"Position: {pos}, Speed: {spd}, Current: {cur}, Temperature: {temp}, Error: {err}, CAN ID: {can_id}")
+                f"Target: {target_position} deg, Position: {pos}, Speed: {spd}, "
+                f"Current: {cur}, Temperature: {temp}, Error: {err}, CAN ID: {can_id}"
+            )
         print("Motor control completed.")
 
     finally:

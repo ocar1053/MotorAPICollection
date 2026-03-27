@@ -1,23 +1,40 @@
 import threading
+import time
+
 import serial
+
 from cubemotorAK109Util import *
 
 CAN_BAUDRATE = 2000000  # CAN bus bitrate (bits/s)
 CAN_TIMEOUT = 5
+SERIAL_PORT = "COM12"
+MOTOR_IDS = (0, 1)
+TARGET_SEQUENCE_DEG = [0, 10, 20, 30, 20, 10, 0]
+POSITION_SPEED_ERPM = 2000
+POSITION_ACCEL_ERPM_S = 5000
 
 stop_flag = False
+
+
 def read_status(listener: SerialCanListener):
     while not stop_flag:
         status_dic = listener.get_status()
-        for motor_id, status in status_dic.items():
+        for motor_id, status in sorted(status_dic.items()):
             print(
-                f"Motor ID: {motor_id}, Position: {status['position']}, Speed: {status['speed']}, Current: {status['current']}, Temperature: {status['temperature']}, Error: {status['error']}")
+                f"Motor ID: {motor_id}, Position: {status['position']}, "
+                f"Speed: {status['speed']}, Current: {status['current']}, "
+                f"Temperature: {status['temperature']}, Error: {status['error']}"
+            )
         time.sleep(0.5)
+
+
 def main():
-    target_postion = 0
+    global stop_flag
+    stop_flag = False
+
     # 1. open serial port
     try:
-        ser = serial.Serial('COM18', CAN_BAUDRATE, timeout=CAN_TIMEOUT)
+        ser = serial.Serial(SERIAL_PORT, CAN_BAUDRATE, timeout=CAN_TIMEOUT)
         time.sleep(0.1)  # wait for serial port to initialize
 
         frame = [
@@ -42,54 +59,47 @@ def main():
     if not ser.is_open:
         print("Failed to open serial port.")
         return
+
     # start serial listener
-    listener = SerialCanListener(ser)    
+    listener = SerialCanListener(ser)
     listener._th.start()
-    servo_mod_set_zero(ser, control_mode_id=5, motor_id=0)
-    
-    servo_mod_set_zero(ser, control_mode_id=5, motor_id=1)
+    for motor_id in MOTOR_IDS:
+        servo_mod_set_zero(ser, control_mode_id=5, motor_id=motor_id)
     print("set to zero")
 
-    
     time.sleep(1)  # wait for the motor to set to zero
-    #open thread to read status
     thread = threading.Thread(target=read_status, args=(listener,), daemon=True)
     thread.start()
-    
-    v = 0
+
     try:
-        # speed control mode test
-        
-        # while 1:
-        #     target_postion = 360
-        #     servo_mod_pos_speed(ser, control_mode_id=6,
-        #                         motor_id=0, pos_deg=target_postion, speed_erpm=5000, rpa=30000)
-        #     print(f"Set target position to: {target_postion} degrees")
-        #     # pos, spd, cur, temp, err, can_id = listener.get_status()
-        #     print(
-        #         f"Position: {pos}, Speed: {spd}, Current: {cur}, Temperature: {temp}, Error: {err}, CAN ID: {can_id}")
-        #     # time.sleep(1)
-
-        # speed control mode test
-        target_postion = 0
-        while 1:
-
-            target_postion += 10
-            if target_postion > 360:
-                break
-
-            servo_mod_pos(ser, control_mode_id=4,
-                          motor_id=0, pos_deg=target_postion)
-            servo_mod_pos(ser, control_mode_id=4,
-                          motor_id=1, pos_deg=target_postion*-1)
-            print(f"Set target position to: {target_postion} degrees")
-            v += 1
-            time.sleep(1)
+        for target_position in TARGET_SEQUENCE_DEG:
+            servo_mod_pos_speed(
+                ser,
+                control_mode_id=6,
+                motor_id=MOTOR_IDS[0],
+                pos_deg=target_position,
+                speed_erpm=POSITION_SPEED_ERPM,
+                rpa=POSITION_ACCEL_ERPM_S,
+            )
+            servo_mod_pos_speed(
+                ser,
+                control_mode_id=6,
+                motor_id=MOTOR_IDS[1],
+                pos_deg=-target_position,
+                speed_erpm=POSITION_SPEED_ERPM,
+                rpa=POSITION_ACCEL_ERPM_S,
+            )
+            print(
+                f"Set target position to: {target_position} degrees "
+                f"(speed={POSITION_SPEED_ERPM} erpm, rpa={POSITION_ACCEL_ERPM_S})"
+            )
+            time.sleep(1.5)
         print("Motor control completed.")
 
     finally:
-        listener.close()
         stop_flag = True
+        thread.join(timeout=1.0)
+        listener.close()
         if ser.is_open:
             ser.close()
 
