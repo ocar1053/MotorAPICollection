@@ -18,15 +18,16 @@ KD_MIN = 0.0
 KD_MAX = 5.0
 
 
+motor_dic = {}
 class SerialCanListener:
 
-    def __init__(self, ser):
+    def __init__(self, ser, can_id: int = 0x00):
         """
         Initialize the SerialCanListener with the specified serial port and baud rate.
         """
         self.ser = ser
         self._lock = threading.Lock()
-        self.can_id = 0x00  # Default CAN ID
+        self.can_id = can_id  # Default CAN ID
         self._pos = 0
         self._spd = 0
         self._cur = 0
@@ -34,7 +35,7 @@ class SerialCanListener:
         self._error = 0
         self._running = True
         self._th = threading.Thread(target=self._read_loop, daemon=True)
-        self._th.start()
+        
 
     def _read_loop(self):
         """
@@ -59,7 +60,9 @@ class SerialCanListener:
             can_id = int.from_bytes(
                 frame[:4], byteorder='little', signed=False)
             # Extract the motor ID from the CAN ID (low byte)
-            self.can_id = can_id & 0xFF
+            #print(f"can id: {can_id & 0xFF}")
+         
+            # self.can_id = can_id & 0xFF
             data_bytes = frame[4:12]
 
             pos_int = int.from_bytes(
@@ -84,6 +87,13 @@ class SerialCanListener:
                 self._cur = motr_cur
                 self._cur_temp = temp
                 self._error = err
+                motor_dic[can_id & 0xFF] = {
+                    "position": motr_pos,
+                    "speed": motr_spd,
+                    "current": motr_cur,
+                    "temperature": temp,
+                    "error": err
+                }
             self.ser.read(1)  # Consume the trailing end byte (0x55)
 
     def get_status(self):
@@ -92,7 +102,7 @@ class SerialCanListener:
         Returns a tuple of (position, speed, current, temperature, error).
         """
         with self._lock:
-            return (self._pos, self._spd, self._cur, self._cur_temp, self._error, self.can_id)
+            return motor_dic
 
     def close(self):
         """
@@ -123,7 +133,7 @@ def send_can_frame(ser, motor_id: int, data_bytes: bytes, control_mode_id: int):
     id_bytes = calc_extid(control_mode_id, motor_id).to_bytes(
         4, byteorder='little', signed=False)
     packet = id_bytes + data_bytes
-    print(f"data length: {len(data_bytes)}")
+  
     if len(data_bytes) == 8:
         # E8 for 8 data length
         packet = b'\xAA' + b'\xE8' + packet + b'\x55'
@@ -131,7 +141,7 @@ def send_can_frame(ser, motor_id: int, data_bytes: bytes, control_mode_id: int):
         # E4 for 4 data length
         packet = b'\xAA' + b'\xE4' + packet + b'\x55'
 
-    print(packet.hex(" "))
+ 
     ser.write(packet)
 
     time.sleep(0.004)
@@ -204,7 +214,7 @@ def servo_mod_set_zero(ser, control_mode_id: int, motor_id: int):
 
     # E1 for 1 data length
     packet = b'\xAA' + b'\xE1'+packet + b'\x55'
-    print(packet.hex(" "))
+
     ser.write(packet)
 
 

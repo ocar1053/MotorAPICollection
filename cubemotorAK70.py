@@ -10,7 +10,7 @@ def main():
     target_postion = 0
     # 1. open serial port
     try:
-        ser = serial.Serial('COM5', CAN_BAUDRATE, timeout=CAN_TIMEOUT)
+        ser = serial.Serial('COM12', CAN_BAUDRATE, timeout=CAN_TIMEOUT)
         time.sleep(0.1)  # wait for serial port to initialize
 
         frame = [
@@ -61,16 +61,17 @@ def main():
         # speed control mode test
         while 1:
 
-            if v % 2 == 0:
-                target_postion = 25.122
-            else:
-                target_postion = -25.122
-
-            servo_mod_pos(ser, control_mode_id=4,
-                          motor_id=93, pos_deg=target_postion)
-
+            # if v % 2 == 0:
+            #     target_postion = 25.122
+            # else:
+            #     target_postion = -25.122
+            target_postion = 36000
+            # servo_mod_pos(ser, control_mode_id=4,
+            #               motor_id=93, pos_deg=target_postion)
+            servo_mod_pos_speed(ser, control_mode_id=6,
+                            motor_id=93, pos_deg=target_postion, speed_erpm=327680, rpa=327670)
             v += 1
-            time.sleep(1)
+            time.sleep(0.0001)
             pos, spd, cur, temp, err, can_id = listener.get_status()
             print(
                 f"Position: {pos}, Speed: {spd}, Current: {cur}, Temperature: {temp}, Error: {err}, CAN ID: {can_id}")
