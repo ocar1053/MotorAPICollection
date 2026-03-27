@@ -16,12 +16,17 @@ KP_MIN = 0.0
 KP_MAX = 500.0
 KD_MIN = 0.0
 KD_MAX = 5.0
-POS_DEG_MIN = -36000.0
-POS_DEG_MAX = 36000.0
+PROTO_POS_DEG_MIN = -36000.0
+PROTO_POS_DEG_MAX = 36000.0
 SPEED_ERPM_MIN = -327680
 SPEED_ERPM_MAX = 327670
 RPA_MIN = 0
 RPA_MAX = 327670
+SAFE_POS_TURN_LIMIT_DEG = 360.0
+SAFE_POS_DEG_MIN = -SAFE_POS_TURN_LIMIT_DEG
+SAFE_POS_DEG_MAX = SAFE_POS_TURN_LIMIT_DEG
+BRAKE_CURRENT_MIN_A = -60.0
+BRAKE_CURRENT_MAX_A = 60.0
 
 
 class SerialCanListener:
@@ -157,6 +162,21 @@ def float_to_uint(x: float, x_min: float, x_max: float, bits: int) -> int:
     return int((x - x_min) * ((1 << bits) / span))
 
 
+def enforce_safe_position_limit(pos_deg: float) -> float:
+    """Reject target positions beyond one mechanical turn."""
+    if not SAFE_POS_DEG_MIN <= pos_deg <= SAFE_POS_DEG_MAX:
+        raise ValueError(
+            f"Target position {pos_deg} deg exceeds one-turn safety limit "
+            f"({SAFE_POS_DEG_MIN} to {SAFE_POS_DEG_MAX} deg)."
+        )
+    return pos_deg
+
+
+def clamp_brake_current(brake_current_a: float) -> float:
+    """Clamp current-brake requests to the protocol-supported range."""
+    return min(max(brake_current_a, BRAKE_CURRENT_MIN_A), BRAKE_CURRENT_MAX_A)
+
+
 def pack_cmd_mit_mode_data(position: float, velocity: float, torque: float, kp: float, kd: float) -> bytearray:
 
     p_des = min(max(position, P_MIN), P_MAX)
@@ -222,7 +242,7 @@ def servo_mod_pos_speed(ser, control_mode_id: int, motor_id: int, pos_deg: float
     speed_erpm arg accept -327680~-327680 (erpm)
     rpa arg accept accept 0~327670 1 unit is equal to 10 electrical speed/s².
     """
-    pos_deg = min(max(pos_deg, POS_DEG_MIN), POS_DEG_MAX)
+    pos_deg = enforce_safe_position_limit(pos_deg)
     speed_erpm = min(max(speed_erpm, SPEED_ERPM_MIN), SPEED_ERPM_MAX)
     rpa = min(max(rpa, RPA_MIN), RPA_MAX)
 
@@ -255,7 +275,7 @@ def servo_mod_pos(ser,  control_mode_id: int, motor_id: int, pos_deg: float = 0.
 
     """
 
-    pos_deg = min(max(pos_deg, POS_DEG_MIN), POS_DEG_MAX)
+    pos_deg = enforce_safe_position_limit(pos_deg)
 
     # strech to
     val = int(pos_deg * 10000.0)
@@ -266,5 +286,22 @@ def servo_mod_pos(ser,  control_mode_id: int, motor_id: int, pos_deg: float = 0.
     buffer[1] = (val >> 16) & 0xFF
     buffer[2] = (val >> 8) & 0xFF
     buffer[3] = val & 0xFF
+
+    send_can_frame(ser, motor_id, buffer, control_mode_id)
+
+
+def servo_mod_current_brake(ser, control_mode_id: int, motor_id: int, brake_current_a: float):
+    """Apply current-brake mode. control id = 2.
+
+    The protocol encodes brake current as int32 where 1000 represents 1 A.
+    """
+    brake_current_a = clamp_brake_current(brake_current_a)
+    current_int = int(brake_current_a * 1000.0)
+
+    buffer = bytearray(4)
+    buffer[0] = (current_int >> 24) & 0xFF
+    buffer[1] = (current_int >> 16) & 0xFF
+    buffer[2] = (current_int >> 8) & 0xFF
+    buffer[3] = current_int & 0xFF
 
     send_can_frame(ser, motor_id, buffer, control_mode_id)
