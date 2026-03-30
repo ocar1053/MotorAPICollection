@@ -47,7 +47,7 @@ COMMAND_RATE_LIMIT_S = 0.08
 SAFE_HOLD_SPEED_ERPM = 3_000
 SAFE_HOLD_RPA = 10_000
 HOLD_KEEPALIVE_MS = 100
-AUTO_HOLD_POSITION_TOLERANCE_DEG = 1.0
+AUTO_HOLD_POSITION_TOLERANCE_DEG = 0.5
 AUTO_HOLD_SPEED_TOLERANCE_ERPM = 300.0
 ZERO_VERIFY_TOLERANCE_DEG = 2.0
 ZERO_VERIFY_TIMEOUT_S = 1.5
@@ -523,13 +523,24 @@ class ArmController:
         if not self.motion_armed:
             return
         for key, state in self.states.items():
-            if not state.auto_hold_engaged:
-                continue
-            if state.error:
-                continue
             spec = self.specs[key]
             controller = self.buses[spec.bus_key]
+            if state.error:
+                continue
             if not controller.connected:
+                continue
+            if state.auto_hold_pending:
+                try:
+                    controller.send_position(
+                        motor_id=spec.motor_id,
+                        target_deg=joint_to_motor_deg(spec, state.commanded_target),
+                        speed_erpm=spec.speed_erpm,
+                        rpa=spec.rpa,
+                    )
+                except Exception:
+                    continue
+                continue
+            if not state.auto_hold_engaged:
                 continue
             try:
                 controller.send_hold_target(
