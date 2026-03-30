@@ -68,6 +68,7 @@ class MotorSpec:
     max_deg: float
     speed_erpm: int
     rpa: int
+    gear_ratio: float
     accent: str
 
 
@@ -76,6 +77,7 @@ class MotorState:
     target: float = 0.0
     commanded_target: float = 0.0
     position: float = 0.0
+    motor_position: float = 0.0
     speed: float = 0.0
     current: float = 0.0
     temperature: float = 0.0
@@ -89,9 +91,9 @@ class MotorState:
 
 
 DEFAULT_MOTORS = [
-    MotorSpec("joint_a", "Joint A", "AK10-9", "A", 0, -45.0, 0, 6_000, 20_000, "#35c2a1"),
-    MotorSpec("joint_b", "Joint B", "AK10-9", "A", 1, -45.0, 45, 6_000, 20_000, "#ff8f3d"),
-    MotorSpec("joint_c", "Joint C", "AK70", "A", 93, -90.0, 90.0, 4_000, 12_000, "#5bbcff"),
+    MotorSpec("joint_a", "Joint A", "AK10-9", "A", 0, -45.0, 0, 6_000, 20_000, 2.0, "#35c2a1"),
+    MotorSpec("joint_b", "Joint B", "AK10-9", "A", 1, -45.0, 45, 6_000, 20_000, 2.0, "#ff8f3d"),
+    MotorSpec("joint_c", "Joint C", "AK70", "A", 93, -90.0, 90.0, 4_000, 12_000, 2.0, "#5bbcff"),
 ]
 
 DEFAULT_PORTS = {"A": "COM12"}
@@ -99,6 +101,16 @@ DEFAULT_PORTS = {"A": "COM12"}
 
 def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(value, upper))
+
+
+def joint_to_motor_deg(spec: MotorSpec, joint_deg: float) -> float:
+    return joint_deg * spec.gear_ratio
+
+
+def motor_to_joint_deg(spec: MotorSpec, motor_deg: float) -> float:
+    if spec.gear_ratio == 0:
+        return motor_deg
+    return motor_deg / spec.gear_ratio
 
 
 def build_bridge_init_frame() -> bytearray:
@@ -355,7 +367,8 @@ class ArmController:
             state = self.states[spec.key]
             state.bus_connected = controller.connected
             if payload:
-                state.position = payload["position"]
+                state.motor_position = payload["position"]
+                state.position = motor_to_joint_deg(spec, payload["position"])
                 state.speed = payload["speed"]
                 state.current = payload["current"]
                 state.temperature = payload["temperature"]
@@ -386,9 +399,10 @@ class ArmController:
         state = self.states[key]
         controller = self.buses[spec.bus_key]
         commanded_target = state.target
+        motor_target = joint_to_motor_deg(spec, commanded_target)
         sent = controller.send_position(
             motor_id=spec.motor_id,
-            target_deg=commanded_target,
+            target_deg=motor_target,
             speed_erpm=spec.speed_erpm,
             rpa=spec.rpa,
             force=force,
@@ -404,9 +418,10 @@ class ArmController:
         spec = self.specs[key]
         controller = self.buses[spec.bus_key]
         target = self.set_target(key, 0.0)
+        motor_target = joint_to_motor_deg(spec, target)
         sent = controller.send_position(
             motor_id=spec.motor_id,
-            target_deg=target,
+            target_deg=motor_target,
             speed_erpm=spec.speed_erpm,
             rpa=spec.rpa,
             force=True,
@@ -424,14 +439,21 @@ class ArmController:
         state.target = clamp(state.position, spec.min_deg, spec.max_deg)
         state.commanded_target = state.target
         state.target_initialized = True
-        controller.send_hold_target(spec.motor_id, target_deg=state.commanded_target, force=True)
+        controller.send_hold_target(
+            spec.motor_id,
+            target_deg=joint_to_motor_deg(spec, state.commanded_target),
+            force=True,
+        )
         state.auto_hold_pending = False
         state.auto_hold_engaged = True
 
     def hold_all(self) -> None:
         fallback_by_bus: Dict[str, Dict[int, float]] = {bus_key: {} for bus_key in BUS_KEYS}
         for spec in self.specs.values():
-            fallback_by_bus[spec.bus_key][spec.motor_id] = self.states[spec.key].commanded_target
+            fallback_by_bus[spec.bus_key][spec.motor_id] = joint_to_motor_deg(
+                spec,
+                self.states[spec.key].commanded_target,
+            )
         for bus_key, controller in self.buses.items():
             controller.hold_all(fallbacks=fallback_by_bus[bus_key])
 
@@ -444,7 +466,7 @@ class ArmController:
         payload = controller.wait_for_position_close(
             spec.motor_id,
             target_deg=0.0,
-            tolerance_deg=ZERO_VERIFY_TOLERANCE_DEG,
+            tolerance_deg=ZERO_VERIFY_TOLERANCE_DEG * spec.gear_ratio,
             timeout_s=ZERO_VERIFY_TIMEOUT_S,
         )
         if payload is None:
@@ -453,7 +475,8 @@ class ArmController:
                 "請保持馬達靜止後再試一次，並等待 1 秒再斷線。"
             )
         state = self.states[key]
-        state.position = float(payload["position"])
+        state.motor_position = float(payload["position"])
+        state.position = motor_to_joint_deg(spec, state.motor_position)
         state.target = clamp(0.0, spec.min_deg, spec.max_deg)
         state.commanded_target = state.target
         state.target_initialized = True
@@ -486,7 +509,11 @@ class ArmController:
             return False
         spec = self.specs[key]
         controller = self.buses[spec.bus_key]
-        sent = controller.send_hold_target(spec.motor_id, target_deg=state.commanded_target, force=True)
+        sent = controller.send_hold_target(
+            spec.motor_id,
+            target_deg=joint_to_motor_deg(spec, state.commanded_target),
+            force=True,
+        )
         if sent:
             state.auto_hold_pending = False
             state.auto_hold_engaged = True
@@ -505,7 +532,11 @@ class ArmController:
             if not controller.connected:
                 continue
             try:
-                controller.send_hold_target(spec.motor_id, target_deg=state.commanded_target, force=True)
+                controller.send_hold_target(
+                    spec.motor_id,
+                    target_deg=joint_to_motor_deg(spec, state.commanded_target),
+                    force=True,
+                )
             except Exception:
                 continue
 
@@ -550,11 +581,15 @@ class MotorCard(QFrame):
         telemetry_grid = QGridLayout()
         telemetry_grid.setHorizontalSpacing(14)
         telemetry_grid.setVerticalSpacing(8)
-        self.position_value = self._build_metric(telemetry_grid, 0, "Actual")
-        self.speed_value = self._build_metric(telemetry_grid, 1, "Speed")
+        self.position_value = self._build_metric(telemetry_grid, 0, "Joint Actual")
+        self.speed_value = self._build_metric(telemetry_grid, 1, "Motor Speed")
         self.current_value = self._build_metric(telemetry_grid, 2, "Current")
         self.temp_value = self._build_metric(telemetry_grid, 3, "Temp")
         layout.addLayout(telemetry_grid)
+
+        self.motor_actual_label = QLabel("Motor Actual: --")
+        self.motor_actual_label.setObjectName("MetaLabel")
+        layout.addWidget(self.motor_actual_label)
 
         self.error_label = QLabel("Error code: 0")
         self.error_label.setObjectName("ErrorLabel")
@@ -573,22 +608,22 @@ class MotorCard(QFrame):
             range_row.addWidget(self.bus_combo, 0, 1)
             range_row.addWidget(QLabel("ID"), 0, 2)
             range_row.addWidget(self.id_spin, 0, 3)
-            range_row.addWidget(QLabel("Min"), 1, 0)
+            range_row.addWidget(QLabel("Joint Min"), 1, 0)
             range_row.addWidget(self.min_spin, 1, 1)
-            range_row.addWidget(QLabel("Max"), 1, 2)
+            range_row.addWidget(QLabel("Joint Max"), 1, 2)
             range_row.addWidget(self.max_spin, 1, 3)
-            range_row.addWidget(QLabel("Speed"), 2, 0)
+            range_row.addWidget(QLabel("Motor Speed"), 2, 0)
             range_row.addWidget(self.speed_spin, 2, 1)
             range_row.addWidget(QLabel("RPA"), 2, 2)
             range_row.addWidget(self.rpa_spin, 2, 3)
         else:
             range_row.addWidget(QLabel("ID"), 0, 0)
             range_row.addWidget(self.id_spin, 0, 1)
-            range_row.addWidget(QLabel("Min"), 0, 2)
+            range_row.addWidget(QLabel("Joint Min"), 0, 2)
             range_row.addWidget(self.min_spin, 0, 3)
-            range_row.addWidget(QLabel("Max"), 1, 0)
+            range_row.addWidget(QLabel("Joint Max"), 1, 0)
             range_row.addWidget(self.max_spin, 1, 1)
-            range_row.addWidget(QLabel("Speed"), 1, 2)
+            range_row.addWidget(QLabel("Motor Speed"), 1, 2)
             range_row.addWidget(self.speed_spin, 1, 3)
             range_row.addWidget(QLabel("RPA"), 2, 0)
             range_row.addWidget(self.rpa_spin, 2, 1)
@@ -604,19 +639,19 @@ class MotorCard(QFrame):
         self.target_slider.setTracking(True)
         self.target_slider.sliderReleased.connect(self._emit_target_changed)
         self.target_slider.valueChanged.connect(self._on_slider_changed)
-        target_row.addWidget(QLabel("Target"))
+        target_row.addWidget(QLabel("Joint Target"))
         target_row.addWidget(self.target_slider, 1)
         target_row.addWidget(self.target_spin)
         layout.addLayout(target_row)
 
         self.temp_bar = QProgressBar()
         self.temp_bar.setRange(0, 100)
-        self.temp_bar.setFormat("Temperature %v°C")
+        self.temp_bar.setFormat("Temperature %v C")
         self.temp_bar.setValue(0)
         layout.addWidget(self.temp_bar)
 
         quick_row = QHBoxLayout()
-        for label, delta in (("-5°", -5.0), ("-1°", -1.0), ("+1°", 1.0), ("+5°", 5.0)):
+        for label, delta in (("-5 deg", -5.0), ("-1 deg", -1.0), ("+1 deg", 1.0), ("+5 deg", 5.0)):
             button = QPushButton(label)
             button.clicked.connect(lambda _checked=False, d=delta: self.nudge_target(d))
             quick_row.addWidget(button)
@@ -625,7 +660,7 @@ class MotorCard(QFrame):
         action_row = QHBoxLayout()
         self.apply_button = QPushButton("Apply")
         self.home_button = QPushButton("回到0")
-        self.zero_button = QPushButton("Set Zero")
+        self.zero_button = QPushButton("Set Joint Zero")
         self.apply_button.clicked.connect(lambda: self.apply_requested.emit(self.spec.key))
         self.home_button.clicked.connect(lambda: self.home_requested.emit(self.spec.key))
         self.zero_button.clicked.connect(lambda: self.zero_requested.emit(self.spec.key))
@@ -673,7 +708,7 @@ class MotorCard(QFrame):
     def apply_spec(self, spec: MotorSpec) -> None:
         self.spec = spec
         self.title_label.setText(f"{spec.name}  {spec.family}")
-        self.meta_label.setText(f"Motor ID {spec.motor_id}")
+        self.meta_label.setText(f"Motor ID {spec.motor_id} | Ratio {spec.gear_ratio:.1f}:1")
 
         for widget, value in (
             (self.bus_combo, spec.bus_key),
@@ -710,17 +745,19 @@ class MotorCard(QFrame):
             max_deg=upper,
             speed_erpm=self.speed_spin.value(),
             rpa=self.rpa_spin.value(),
+            gear_ratio=self.spec.gear_ratio,
             accent=self.spec.accent,
         )
 
     def set_state(self, spec: MotorSpec, state: MotorState) -> None:
         self.spec = spec
         self.title_label.setText(f"{spec.name}  {spec.family}")
-        self.meta_label.setText(f"Motor ID {spec.motor_id}")
-        self.position_value.setText(f"{state.position:,.1f}°")
+        self.meta_label.setText(f"Motor ID {spec.motor_id} | Ratio {spec.gear_ratio:.1f}:1")
+        self.position_value.setText(f"{state.position:,.1f} deg")
         self.speed_value.setText(f"{state.speed:,.0f} eRPM")
         self.current_value.setText(f"{state.current:,.2f} A")
-        self.temp_value.setText(f"{state.temperature:,.0f}°C")
+        self.temp_value.setText(f"{state.temperature:,.0f} C")
+        self.motor_actual_label.setText(f"Motor Actual: {state.motor_position:,.1f} deg")
         self.error_label.setText(f"Error code: {state.error}")
         self.temp_bar.setValue(int(clamp(state.temperature, 0, 100)))
         self.temp_bar.setStyleSheet(
@@ -815,7 +852,7 @@ class MotorCard(QFrame):
         self.target_changed.emit(self.spec.key, self.target_spin.value())
 
     def _emit_spec_changed(self) -> None:
-        self.meta_label.setText(f"Motor ID {self.id_spin.value()}")
+        self.meta_label.setText(f"Motor ID {self.id_spin.value()} | Ratio {self.spec.gear_ratio:.1f}:1")
         self.spec_changed.emit(self.current_spec())
 
 
