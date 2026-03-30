@@ -13,6 +13,7 @@ commands used by the current tools and GUI.
 
 - CubeMotor AK10-9 series
 - CubeMotor AK70 series
+- CubeMotor AK60 series
 - Waveshare USB-to-CAN (USB-CAN) converter
 
 ## Supported software
