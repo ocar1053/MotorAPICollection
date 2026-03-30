@@ -176,6 +176,9 @@ def servo_mod_set_zero(ser, control_mode_id: int, motor_id: int):
     packet = b'\xAA' + b'\xE1'+packet + b'\x55'
 
     ser.write(packet)
+    ser.flush()
+    # Give the controller a short window to commit zero-offset handling.
+    time.sleep(0.03)
 
 
 def servo_mod_pos_speed(ser, control_mode_id: int, motor_id: int, pos_deg: float, speed_erpm: int, rpa: int):

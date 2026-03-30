@@ -49,6 +49,9 @@ SAFE_HOLD_RPA = 10_000
 HOLD_KEEPALIVE_MS = 100
 AUTO_HOLD_POSITION_TOLERANCE_DEG = 1.0
 AUTO_HOLD_SPEED_TOLERANCE_ERPM = 300.0
+ZERO_VERIFY_TOLERANCE_DEG = 2.0
+ZERO_VERIFY_TIMEOUT_S = 1.5
+ZERO_COMMAND_SETTLE_S = 0.15
 DEFAULT_TEMP_LIMIT_C = 70
 SLIDER_SCALE = 10
 BUS_KEYS = ("A",)
@@ -88,7 +91,7 @@ class MotorState:
 DEFAULT_MOTORS = [
     MotorSpec("joint_a", "Joint A", "AK10-9", "A", 0, -45.0, 0, 6_000, 20_000, "#35c2a1"),
     MotorSpec("joint_b", "Joint B", "AK10-9", "A", 1, -45.0, 45, 6_000, 20_000, "#ff8f3d"),
-    MotorSpec("joint_c", "Joint C", "AK70", "A", 93, -45.0, 45, 4_000, 12_000, "#5bbcff"),
+    MotorSpec("joint_c", "Joint C", "AK70", "A", 93, -90.0, 90.0, 4_000, 12_000, "#5bbcff"),
 ]
 
 DEFAULT_PORTS = {"A": "COM12"}
@@ -178,6 +181,21 @@ class CanBusController:
         with self._lock:
             self._require_connection()
             motor_proto.servo_mod_set_zero(self.ser, control_mode_id=5, motor_id=motor_id)
+
+    def wait_for_position_close(
+        self,
+        motor_id: int,
+        target_deg: float,
+        tolerance_deg: float,
+        timeout_s: float,
+    ) -> dict | None:
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            payload = self.snapshot_states().get(motor_id)
+            if payload and abs(payload["position"] - target_deg) <= tolerance_deg:
+                return payload
+            time.sleep(0.05)
+        return None
 
     def send_position(
         self,
@@ -421,9 +439,23 @@ class ArmController:
         spec = self.specs[key]
         controller = self.buses[spec.bus_key]
         controller.set_zero(spec.motor_id)
+        # Zero-offset updates are not always instantaneous; verify telemetry before accepting success.
+        time.sleep(ZERO_COMMAND_SETTLE_S)
+        payload = controller.wait_for_position_close(
+            spec.motor_id,
+            target_deg=0.0,
+            tolerance_deg=ZERO_VERIFY_TOLERANCE_DEG,
+            timeout_s=ZERO_VERIFY_TIMEOUT_S,
+        )
+        if payload is None:
+            raise RuntimeError(
+                "零點指令已送出，但未確認成功。"
+                "請保持馬達靜止後再試一次，並等待 1 秒再斷線。"
+            )
         state = self.states[key]
-        state.target = 0.0
-        state.commanded_target = 0.0
+        state.position = float(payload["position"])
+        state.target = clamp(0.0, spec.min_deg, spec.max_deg)
+        state.commanded_target = state.target
         state.target_initialized = True
         self._clear_auto_hold_state(key)
 
@@ -1142,6 +1174,10 @@ class MainWindow(QMainWindow):
 
     def _disconnect_all(self) -> None:
         self.arm_checkbox.setChecked(False)
+        try:
+            self.controller.hold_all()
+        except Exception:
+            pass
         self.controller.disconnect_all()
         self._log("已中斷連線")
 
