@@ -153,10 +153,10 @@ def clamp_brake_current(brake_current_a: float) -> float:
 
 def servo_mod_set_zero(ser, control_mode_id: int, motor_id: int):
     """
-    Set the motor to zero position. control id = 5
+    Set the motor's permanent zero position. control id = 5
     """
 
-    data = bytes([0x00])
+    data = bytes([0x01])
 
     id_bytes = calc_extid(control_mode_id, motor_id).to_bytes(
         4, byteorder='little', signed=False)
