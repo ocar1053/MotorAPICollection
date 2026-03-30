@@ -46,6 +46,9 @@ STATUS_POLL_MS = 150
 COMMAND_RATE_LIMIT_S = 0.08
 SAFE_HOLD_SPEED_ERPM = 3_000
 SAFE_HOLD_RPA = 10_000
+HOLD_KEEPALIVE_MS = 100
+AUTO_HOLD_POSITION_TOLERANCE_DEG = 1.0
+AUTO_HOLD_SPEED_TOLERANCE_ERPM = 300.0
 DEFAULT_TEMP_LIMIT_C = 70
 SLIDER_SCALE = 10
 BUS_KEYS = ("A",)
@@ -68,6 +71,7 @@ class MotorSpec:
 @dataclass
 class MotorState:
     target: float = 0.0
+    commanded_target: float = 0.0
     position: float = 0.0
     speed: float = 0.0
     current: float = 0.0
@@ -77,15 +81,17 @@ class MotorState:
     telemetry_ok: bool = False
     target_initialized: bool = False
     last_update: float = 0.0
+    auto_hold_pending: bool = False
+    auto_hold_engaged: bool = False
 
 
 DEFAULT_MOTORS = [
-    MotorSpec("joint_a", "Joint A", "AK10-9", "A", 0, -45.0, 45.0, 6_000, 20_000, "#35c2a1"),
-    MotorSpec("joint_b", "Joint B", "AK10-9", "A", 1, -45.0, 45.0, 6_000, 20_000, "#ff8f3d"),
-    MotorSpec("joint_c", "Joint C", "AK70", "A", 93, -30.0, 30.0, 4_000, 12_000, "#5bbcff"),
+    MotorSpec("joint_a", "Joint A", "AK10-9", "A", 0, -45.0, 0, 6_000, 20_000, "#35c2a1"),
+    MotorSpec("joint_b", "Joint B", "AK10-9", "A", 1, -45.0, 45, 6_000, 20_000, "#ff8f3d"),
+    MotorSpec("joint_c", "Joint C", "AK70", "A", 93, -45.0, 45, 4_000, 12_000, "#5bbcff"),
 ]
 
-DEFAULT_PORTS = {"A": "COM18"}
+DEFAULT_PORTS = {"A": "COM12"}
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
@@ -200,13 +206,28 @@ class CanBusController:
     def hold_position(self, motor_id: int, fallback: float = 0.0) -> None:
         snapshot = self.snapshot_states()
         current_position = snapshot.get(motor_id, {}).get("position", fallback)
-        self.send_position(
+        self.send_hold_target(
             motor_id,
             target_deg=current_position,
-            speed_erpm=SAFE_HOLD_SPEED_ERPM,
-            rpa=SAFE_HOLD_RPA,
             force=True,
         )
+
+    def send_hold_target(self, motor_id: int, target_deg: float, force: bool = False) -> bool:
+        with self._lock:
+            self._require_connection()
+            now = time.time()
+            if not force and now - self._last_command_ts.get(motor_id, 0.0) < COMMAND_RATE_LIMIT_S:
+                return False
+            motor_proto.servo_mod_pos_speed(
+                self.ser,
+                control_mode_id=6,
+                motor_id=motor_id,
+                pos_deg=target_deg,
+                speed_erpm=SAFE_HOLD_SPEED_ERPM,
+                rpa=SAFE_HOLD_RPA,
+            )
+            self._last_command_ts[motor_id] = now
+            return True
 
     def hold_all(self, fallbacks: Dict[int, float] | None = None) -> None:
         fallbacks = fallbacks or {}
@@ -237,7 +258,7 @@ class CanBusController:
 
     def _require_connection(self) -> None:
         if not self.connected or not self.ser:
-            raise RuntimeError(f"Bus {self.bus_key} 尚未連線。")
+            raise RuntimeError(f"Bus {self.bus_key} 未連線。")
 
 
 class ArmController:
@@ -254,8 +275,21 @@ class ArmController:
         state = self.states[spec.key]
         state.target = clamp(state.target, spec.min_deg, spec.max_deg)
 
+    def _clear_auto_hold_state(self, key: str) -> None:
+        state = self.states[key]
+        state.auto_hold_pending = False
+        state.auto_hold_engaged = False
+
+    def _arm_auto_hold(self, key: str) -> None:
+        state = self.states[key]
+        state.auto_hold_pending = True
+        state.auto_hold_engaged = False
+
     def set_motion_armed(self, armed: bool) -> None:
         self.motion_armed = armed
+        if not armed:
+            for key in self.states:
+                self._clear_auto_hold_state(key)
 
     def connect_buses(self, port_map: Dict[str, str]) -> None:
         assignments: Dict[str, list[int]] = {bus_key: [] for bus_key in BUS_KEYS}
@@ -264,7 +298,7 @@ class ArmController:
 
         for bus_key, motor_ids in assignments.items():
             if len(motor_ids) != len(set(motor_ids)):
-                raise RuntimeError(f"Bus {bus_key} 有重複的 motor ID，請先修正。")
+                raise RuntimeError(f"Bus {bus_key} 的 motor ID 重複，請檢查設定。")
 
         for bus_key, motor_ids in assignments.items():
             controller = self.buses[bus_key]
@@ -273,12 +307,14 @@ class ArmController:
                 continue
             port = port_map.get(bus_key, "").strip()
             if not port:
-                raise RuntimeError(f"Bus {bus_key} 沒有指定 COM port。")
+                raise RuntimeError(f"Bus {bus_key} 尚未選擇 COM port。")
             controller.connect(port, motor_ids)
 
         for state in self.states.values():
             state.target_initialized = False
             state.telemetry_ok = False
+            state.auto_hold_pending = False
+            state.auto_hold_engaged = False
 
     def disconnect_all(self) -> None:
         for controller in self.buses.values():
@@ -286,6 +322,8 @@ class ArmController:
         for state in self.states.values():
             state.bus_connected = False
             state.telemetry_ok = False
+            state.auto_hold_pending = False
+            state.auto_hold_engaged = False
 
     def refresh_states(self) -> Dict[str, MotorState]:
         snapshots = {
@@ -307,7 +345,9 @@ class ArmController:
                 state.telemetry_ok = True
                 state.last_update = payload["last_update"]
                 if not state.target_initialized:
-                    state.target = clamp(state.position, spec.min_deg, spec.max_deg)
+                    current_position = clamp(state.position, spec.min_deg, spec.max_deg)
+                    state.target = current_position
+                    state.commanded_target = current_position
                     state.target_initialized = True
             else:
                 state.telemetry_ok = False
@@ -327,25 +367,53 @@ class ArmController:
         spec = self.specs[key]
         state = self.states[key]
         controller = self.buses[spec.bus_key]
-        return controller.send_position(
+        commanded_target = state.target
+        sent = controller.send_position(
             motor_id=spec.motor_id,
-            target_deg=state.target,
+            target_deg=commanded_target,
             speed_erpm=spec.speed_erpm,
             rpa=spec.rpa,
             force=force,
         )
+        if sent:
+            state.commanded_target = commanded_target
+            self._arm_auto_hold(key)
+        return sent
+
+    def command_home_zero(self, key: str) -> bool:
+        if not self.motion_armed:
+            raise RuntimeError("動作鎖定中，先勾選「解除動作鎖定」。")
+        spec = self.specs[key]
+        controller = self.buses[spec.bus_key]
+        target = self.set_target(key, 0.0)
+        sent = controller.send_position(
+            motor_id=spec.motor_id,
+            target_deg=target,
+            speed_erpm=spec.speed_erpm,
+            rpa=spec.rpa,
+            force=True,
+        )
+        if sent:
+            state = self.states[key]
+            state.commanded_target = target
+            self._arm_auto_hold(key)
+        return sent
 
     def hold_motor(self, key: str) -> None:
         spec = self.specs[key]
         state = self.states[key]
         controller = self.buses[spec.bus_key]
-        controller.hold_position(spec.motor_id, fallback=state.target)
         state.target = clamp(state.position, spec.min_deg, spec.max_deg)
+        state.commanded_target = state.target
+        state.target_initialized = True
+        controller.send_hold_target(spec.motor_id, target_deg=state.commanded_target, force=True)
+        state.auto_hold_pending = False
+        state.auto_hold_engaged = True
 
     def hold_all(self) -> None:
         fallback_by_bus: Dict[str, Dict[int, float]] = {bus_key: {} for bus_key in BUS_KEYS}
         for spec in self.specs.values():
-            fallback_by_bus[spec.bus_key][spec.motor_id] = self.states[spec.key].target
+            fallback_by_bus[spec.bus_key][spec.motor_id] = self.states[spec.key].commanded_target
         for bus_key, controller in self.buses.items():
             controller.hold_all(fallbacks=fallback_by_bus[bus_key])
 
@@ -355,7 +423,9 @@ class ArmController:
         controller.set_zero(spec.motor_id)
         state = self.states[key]
         state.target = 0.0
+        state.commanded_target = 0.0
         state.target_initialized = True
+        self._clear_auto_hold_state(key)
 
     def set_zero_all(self) -> None:
         for key in self.specs:
@@ -363,12 +433,54 @@ class ArmController:
 
     def emergency_stop(self) -> None:
         self.motion_armed = False
+        for key in self.states:
+            self._clear_auto_hold_state(key)
         self.hold_all()
+
+    def try_auto_hold(
+        self,
+        key: str,
+        position_tolerance_deg: float = AUTO_HOLD_POSITION_TOLERANCE_DEG,
+        speed_tolerance_erpm: float = AUTO_HOLD_SPEED_TOLERANCE_ERPM,
+    ) -> bool:
+        state = self.states[key]
+        if not state.auto_hold_pending or not self.motion_armed:
+            return False
+        if not state.bus_connected or not state.telemetry_ok or state.error:
+            return False
+        if abs(state.commanded_target - state.position) > position_tolerance_deg:
+            return False
+        if abs(state.speed) > speed_tolerance_erpm:
+            return False
+        spec = self.specs[key]
+        controller = self.buses[spec.bus_key]
+        sent = controller.send_hold_target(spec.motor_id, target_deg=state.commanded_target, force=True)
+        if sent:
+            state.auto_hold_pending = False
+            state.auto_hold_engaged = True
+        return sent
+
+    def maintain_target_holds(self) -> None:
+        if not self.motion_armed:
+            return
+        for key, state in self.states.items():
+            if not state.auto_hold_engaged:
+                continue
+            if state.error:
+                continue
+            spec = self.specs[key]
+            controller = self.buses[spec.bus_key]
+            if not controller.connected:
+                continue
+            try:
+                controller.send_hold_target(spec.motor_id, target_deg=state.commanded_target, force=True)
+            except Exception:
+                continue
 
 
 class MotorCard(QFrame):
     apply_requested = pyqtSignal(str)
-    hold_requested = pyqtSignal(str)
+    home_requested = pyqtSignal(str)
     zero_requested = pyqtSignal(str)
     target_changed = pyqtSignal(str, float)
     spec_changed = pyqtSignal(object)
@@ -457,7 +569,7 @@ class MotorCard(QFrame):
         self.target_spin.valueChanged.connect(self._on_target_spin_changed)
         self.target_spin.editingFinished.connect(self._emit_target_changed)
         self.target_slider = QSlider(Qt.Orientation.Horizontal)
-        self.target_slider.setTracking(False)
+        self.target_slider.setTracking(True)
         self.target_slider.sliderReleased.connect(self._emit_target_changed)
         self.target_slider.valueChanged.connect(self._on_slider_changed)
         target_row.addWidget(QLabel("Target"))
@@ -480,13 +592,13 @@ class MotorCard(QFrame):
 
         action_row = QHBoxLayout()
         self.apply_button = QPushButton("Apply")
-        self.hold_button = QPushButton("Hold")
+        self.home_button = QPushButton("回到0")
         self.zero_button = QPushButton("Set Zero")
         self.apply_button.clicked.connect(lambda: self.apply_requested.emit(self.spec.key))
-        self.hold_button.clicked.connect(lambda: self.hold_requested.emit(self.spec.key))
+        self.home_button.clicked.connect(lambda: self.home_requested.emit(self.spec.key))
         self.zero_button.clicked.connect(lambda: self.zero_requested.emit(self.spec.key))
         action_row.addWidget(self.apply_button)
-        action_row.addWidget(self.hold_button)
+        action_row.addWidget(self.home_button)
         action_row.addWidget(self.zero_button)
         layout.addLayout(action_row)
 
@@ -513,7 +625,7 @@ class MotorCard(QFrame):
 
     def _limit_spinbox(self) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
-        spin.setRange(-36_000.0, 36_000.0)
+        spin.setRange(motor_proto.SAFE_POS_DEG_MIN, motor_proto.SAFE_POS_DEG_MAX)
         spin.setDecimals(1)
         spin.setSingleStep(1.0)
         spin.valueChanged.connect(self._on_limit_changed)
@@ -584,7 +696,8 @@ class MotorCard(QFrame):
             % ("#ff5f56" if state.temperature >= 70 else spec.accent)
         )
 
-        if state.target_initialized and not self._setting_target:
+        user_is_editing_target = self.target_slider.isSliderDown() or self.target_spin.hasFocus()
+        if state.target_initialized and not self._setting_target and not user_is_editing_target:
             self.set_target_value(state.target)
 
         if not state.bus_connected:
@@ -623,7 +736,7 @@ class MotorCard(QFrame):
 
     def nudge_target(self, delta: float) -> None:
         self.set_target_value(self.target_spin.value() + delta)
-        self._target_timer.start()
+        self._emit_target_changed()
 
     def _apply_target_range(self, lower: float, upper: float) -> None:
         slider_blocker = QSignalBlocker(self.target_slider)
@@ -690,6 +803,10 @@ class MainWindow(QMainWindow):
         self._poll_timer.setInterval(STATUS_POLL_MS)
         self._poll_timer.timeout.connect(self._refresh_ui)
         self._poll_timer.start()
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setInterval(HOLD_KEEPALIVE_MS)
+        self._hold_timer.timeout.connect(self._maintain_holds)
+        self._hold_timer.start()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -702,7 +819,7 @@ class MainWindow(QMainWindow):
         header_layout = QVBoxLayout(header)
         title = QLabel("Robotic Arm Motion Desk")
         title.setObjectName("HeaderTitle")
-        subtitle = QLabel("三軸手動控制介面，內建軟體限位、Arm 鎖、Hold、過熱保護與急停。")
+        subtitle = QLabel("單一 USB / CAN 的安全控制介面，先連線、再解鎖、再下達目標。")
         subtitle.setObjectName("HeaderSubtitle")
         header_layout.addWidget(title)
         header_layout.addWidget(subtitle)
@@ -724,7 +841,7 @@ class MainWindow(QMainWindow):
         for spec in DEFAULT_MOTORS:
             card = MotorCard(spec)
             card.apply_requested.connect(self._apply_single)
-            card.hold_requested.connect(self._hold_single)
+            card.home_requested.connect(self._home_single)
             card.zero_requested.connect(self._zero_single)
             card.target_changed.connect(self._target_changed)
             card.spec_changed.connect(self._spec_changed)
@@ -735,7 +852,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(motor_area, 1)
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("尚未連線")
+        self.statusBar().showMessage("未連線")
 
     def _build_system_panel(self) -> QWidget:
         panel = QFrame()
@@ -780,22 +897,19 @@ class MainWindow(QMainWindow):
         self.connect_button = QPushButton("Connect")
         self.disconnect_button = QPushButton("Disconnect")
         self.apply_all_button = QPushButton("Apply All")
-        self.hold_all_button = QPushButton("Hold All")
         self.zero_all_button = QPushButton("Set Zero All")
         self.estop_button = QPushButton("E-STOP")
         self.estop_button.setObjectName("DangerButton")
         self.connect_button.clicked.connect(self._connect_all)
         self.disconnect_button.clicked.connect(self._disconnect_all)
         self.apply_all_button.clicked.connect(self._apply_all)
-        self.hold_all_button.clicked.connect(self._hold_all)
         self.zero_all_button.clicked.connect(self._zero_all)
         self.estop_button.clicked.connect(lambda: self._trigger_emergency_stop("使用者觸發急停"))
         button_row.addWidget(self.connect_button, 0, 0)
         button_row.addWidget(self.disconnect_button, 0, 1)
         button_row.addWidget(self.apply_all_button, 1, 0)
-        button_row.addWidget(self.hold_all_button, 1, 1)
-        button_row.addWidget(self.zero_all_button, 2, 0)
-        button_row.addWidget(self.estop_button, 2, 1)
+        button_row.addWidget(self.zero_all_button, 1, 1)
+        button_row.addWidget(self.estop_button, 2, 0, 1, 2)
         layout.addLayout(button_row)
         layout.addStretch(1)
         return panel
@@ -812,7 +926,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("SectionTitle")
         layout.addWidget(title)
 
-        note = QLabel("只保留最近訊息。先連線確認回授，再解鎖 Arm。")
+        note = QLabel("只保留最近的安全與錯誤訊息。確認狀態 READY 後，再勾選解除動作鎖定。")
         note.setWordWrap(True)
         note.setObjectName("HintLabel")
         layout.addWidget(note)
@@ -904,7 +1018,7 @@ class MainWindow(QMainWindow):
             combo.setCurrentText(previous)
             del blocker
         self.statusBar().showMessage(
-            f"COM ports: {', '.join(available_ports) if available_ports else '沒有偵測到裝置'}",
+            f"COM ports: {', '.join(available_ports) if available_ports else '未找到可用裝置'}",
             4000,
         )
 
@@ -915,8 +1029,26 @@ class MainWindow(QMainWindow):
         clamped = self.controller.set_target(key, value)
         self.cards[key].set_target_value(clamped)
 
+    @staticmethod
+    def _command_hold_suffix(spec: MotorSpec) -> str:
+        return "，到位後自動 HOLD"
+
     def _apply_single(self, key: str) -> None:
         self._send_command(key, force=True)
+
+    def _home_single(self, key: str) -> None:
+        try:
+            sent = self.controller.command_home_zero(key)
+            self.cards[key].set_target_value(self.controller.states[key].target)
+            if sent:
+                spec = self.controller.specs[key]
+                suffix = self._command_hold_suffix(spec)
+                self._log(
+                    f"{spec.name}: 回到 0 "
+                    f"(speed={spec.speed_erpm}, rpa={spec.rpa}){suffix}"
+                )
+        except Exception as exc:
+            self._log(str(exc))
 
     def _apply_all(self) -> None:
         for key in self.cards:
@@ -925,14 +1057,14 @@ class MainWindow(QMainWindow):
     def _hold_single(self, key: str) -> None:
         try:
             self.controller.hold_motor(key)
-            self._log(f"{self.controller.specs[key].name}: Hold 目前位置")
+            self._log(f"{self.controller.specs[key].name}: 保持目前位置")
         except Exception as exc:
             self._log(str(exc))
 
     def _hold_all(self) -> None:
         try:
             self.controller.hold_all()
-            self._log("所有馬達進入 Hold")
+            self._log("全部馬達保持目前位置")
         except Exception as exc:
             self._log(str(exc))
 
@@ -940,23 +1072,23 @@ class MainWindow(QMainWindow):
         spec = self.controller.specs[key]
         answer = QMessageBox.question(
             self,
-            "確認歸零",
-            f"確定要將 {spec.name} (ID {spec.motor_id}) 設為零點嗎？\n請先確認機械手臂姿態安全。",
+            "設定零點確認",
+            f"是否要將 {spec.name} (ID {spec.motor_id}) 的目前位置設為零點？\n請先確認機械手姿態正確，否則之後角度會偏移。",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
             self.controller.set_zero(key)
             self.cards[key].set_target_value(0.0)
-            self._log(f"{spec.name}: 已送出 Set Zero")
+            self._log(f"{spec.name}: 已設為零點")
         except Exception as exc:
             self._log(str(exc))
 
     def _zero_all(self) -> None:
         answer = QMessageBox.question(
             self,
-            "確認全部歸零",
-            "確定要將三顆馬達都設為零點嗎？\n請先確認機構固定且沒有負載風險。",
+            "全部設零確認",
+            "是否要將所有馬達的目前位置都設為零點？\n請先確認機械手姿態正確，否則之後角度會全部偏移。",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -964,7 +1096,7 @@ class MainWindow(QMainWindow):
             self.controller.set_zero_all()
             for card in self.cards.values():
                 card.set_target_value(0.0)
-            self._log("已送出全部 Set Zero")
+            self._log("全部馬達已設為零點")
         except Exception as exc:
             self._log(str(exc))
 
@@ -974,7 +1106,8 @@ class MainWindow(QMainWindow):
             if sent:
                 spec = self.controller.specs[key]
                 target = self.controller.states[key].target
-                self._log(f"{spec.name}: 目標 {target:.1f}°")
+                suffix = self._command_hold_suffix(spec)
+                self._log(f"{spec.name}: 目標 {target:.1f}°{suffix}")
         except Exception as exc:
             self._log(str(exc))
 
@@ -1010,7 +1143,7 @@ class MainWindow(QMainWindow):
     def _disconnect_all(self) -> None:
         self.arm_checkbox.setChecked(False)
         self.controller.disconnect_all()
-        self._log("已斷線")
+        self._log("已中斷連線")
 
     def _arm_toggled(self, checked: bool) -> None:
         if checked:
@@ -1020,17 +1153,17 @@ class MainWindow(QMainWindow):
                 self.arm_checkbox.setChecked(False)
                 del blocker
                 self.controller.set_motion_armed(False)
-                self._log(f"無法 Arm: {reason}")
+                self._log(f"無法解除動作鎖定: {reason}")
                 return
         self.controller.set_motion_armed(checked)
-        self._log("動作已解鎖，可送出 Apply" if checked else "動作已鎖定")
+        self._log("已解除動作鎖定，可執行 Apply" if checked else "已啟用安全鎖定")
 
     def _refresh_ui(self) -> None:
         try:
             self._apply_card_specs(update_targets=False)
             states = self.controller.refresh_states()
         except Exception as exc:
-            self._log(f"狀態更新失敗: {exc}")
+            self._log(f"更新狀態失敗: {exc}")
             return
 
         self._latest_states = states
@@ -1038,6 +1171,7 @@ class MainWindow(QMainWindow):
             spec = self.controller.specs[key]
             card.set_state(spec, states[key])
             self._check_safety(spec, states[key])
+            self._maybe_auto_hold(key)
 
         arm_state = "ARMED" if self.controller.motion_armed else "SAFE"
         self.statusBar().showMessage(
@@ -1048,7 +1182,7 @@ class MainWindow(QMainWindow):
         if not state.bus_connected or not state.telemetry_ok:
             return
         if state.error and (self.arm_checkbox.isChecked() or not self._emergency_latched):
-            self._trigger_emergency_stop(f"{spec.name} 回報錯誤碼 {state.error}")
+            self._trigger_emergency_stop(f"{spec.name} error code {state.error}")
             return
         if state.temperature >= self.temp_limit_spin.value() and (
             self.arm_checkbox.isChecked() or not self._emergency_latched
@@ -1056,6 +1190,18 @@ class MainWindow(QMainWindow):
             self._trigger_emergency_stop(
                 f"{spec.name} 溫度 {state.temperature:.0f}°C 超過限制 {self.temp_limit_spin.value()}°C"
             )
+
+    def _maybe_auto_hold(self, key: str) -> None:
+        try:
+            if self.controller.try_auto_hold(key):
+                self.cards[key].set_target_value(self.controller.states[key].target)
+                spec = self.controller.specs[key]
+                self._log(f"{spec.name}: 已到位，進入 HOLD")
+        except Exception as exc:
+            self._log(str(exc))
+
+    def _maintain_holds(self) -> None:
+        self.controller.maintain_target_holds()
 
     def _trigger_emergency_stop(self, reason: str) -> None:
         self._emergency_latched = True
@@ -1078,28 +1224,30 @@ class MainWindow(QMainWindow):
     def _current_safety_blocker(self) -> str | None:
         any_connected = any(controller.connected for controller in self.controller.buses.values())
         if not any_connected:
-            return "尚未連線到任何 CAN bus"
+            return "尚未連線任何 CAN bus"
         if not self._latest_states:
-            return "等待回授初始化"
+            return "尚未收到任何馬達回授"
+        any_telemetry = False
         for key, state in self._latest_states.items():
             spec = self.controller.specs[key]
-            if state.bus_connected and not state.telemetry_ok:
-                return f"{spec.name} 尚未收到回授"
             if not state.bus_connected or not state.telemetry_ok:
                 continue
+            any_telemetry = True
             if state.error:
-                return f"{spec.name} 錯誤碼 {state.error}"
+                return f"{spec.name} error code {state.error}"
             if state.temperature >= self.temp_limit_spin.value():
                 return f"{spec.name} 溫度 {state.temperature:.0f}°C"
+        if not any_telemetry:
+            return "尚未收到任何已連線馬達回授"
         return None
 
     def _update_status_hint(self, bus_key: str) -> None:
         text = self.port_boxes[bus_key].currentText().strip()
         if text:
             if len(BUS_KEYS) == 1:
-                self.statusBar().showMessage(f"USB 準備使用 {text}")
+                self.statusBar().showMessage(f"USB 已選擇 {text}")
             else:
-                self.statusBar().showMessage(f"Bus {bus_key} 準備使用 {text}")
+                self.statusBar().showMessage(f"Bus {bus_key} 已選擇 {text}")
 
     def _log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")

@@ -2,20 +2,8 @@
 import serial
 import struct
 import time
-import math
-from dataclasses import dataclass
 import threading
 
-P_MIN = -12.5
-P_MAX = 12.5
-V_MIN = -50.0
-V_MAX = 50.0
-T_MIN = -65.0
-T_MAX = 65.0
-KP_MIN = 0.0
-KP_MAX = 500.0
-KD_MIN = 0.0
-KD_MAX = 5.0
 PROTO_POS_DEG_MIN = -36000.0
 PROTO_POS_DEG_MAX = 36000.0
 SPEED_ERPM_MIN = -327680
@@ -158,20 +146,6 @@ def send_can_frame(ser, motor_id: int, data_bytes: bytes, control_mode_id: int):
     time.sleep(0.004)
 
 
-def float_to_uint(x: float, x_min: float, x_max: float, bits: int) -> int:
-    """
-    Convert a float value to an unsigned integer representation within a specified range and bit width.
-    """
-    span = x_max - x_min
-
-    if x < x_min:
-        x = x_min
-    elif x > x_max:
-        x = x_max
-
-    return int((x - x_min) * ((1 << bits) / span))
-
-
 def enforce_safe_position_limit(pos_deg: float) -> float:
     """Reject target positions beyond one mechanical turn."""
     if not SAFE_POS_DEG_MIN <= pos_deg <= SAFE_POS_DEG_MAX:
@@ -185,46 +159,6 @@ def enforce_safe_position_limit(pos_deg: float) -> float:
 def clamp_brake_current(brake_current_a: float) -> float:
     """Clamp current-brake requests to the protocol-supported range."""
     return min(max(brake_current_a, BRAKE_CURRENT_MIN_A), BRAKE_CURRENT_MAX_A)
-
-
-def pack_cmd_mit_mode_data(position: float, velocity: float, torque: float, kp: float, kd: float) -> bytearray:
-
-    p_des = min(max(position, P_MIN), P_MAX)
-    v_des = min(max(velocity, V_MIN), V_MAX)
-    kp_val = min(max(kp, KP_MIN), KP_MAX)
-    kd_val = min(max(kd, KD_MIN), KD_MAX)
-    t_ff = min(max(torque, T_MIN), T_MAX)
-
-    p_int = float_to_uint(p_des, P_MIN, P_MAX, 16)
-    v_int = float_to_uint(v_des, V_MIN, V_MAX, 12)
-    kp_int = float_to_uint(kp_val, KP_MIN, KP_MAX, 12)
-    kd_int = float_to_uint(kd_val, KD_MIN, KD_MAX, 12)
-    torque_int = float_to_uint(t_ff, T_MIN, T_MAX, 12)
-
-    data = bytearray(8)
-
-    # DATA[0] = pos high 8
-    data[0] = (p_int >> 8) & 0xFF
-    # DATA[1] = pos low 8
-    data[1] = p_int & 0xFF
-
-    # DATA[2] = velocity high 8 bits
-    data[2] = (v_int >> 8) & 0xFF
-    # DATA[3] bits7-4: velocity low 4 bits; bits3-0: KP high 4 bits
-    data[3] = ((v_int & 0xF) << 4) | ((kp_int >> 8) & 0xF)
-
-    # DATA[4] = KP low 8 bits
-    data[4] = kp_int & 0xFF
-
-    # DATA[5] = KD high 8 bits
-    data[5] = (kd_int >> 4) & 0xFF
-    # DATA[6] bits7-4: KD low 4 bits; bits3-0: torque high 4 bits
-    data[6] = ((kd_int & 0xF) << 4) | ((torque_int >> 8) & 0xF)
-
-    # DATA[7] = torque low 8 bits
-    data[7] = torque_int & 0xFF
-
-    return data
 
 
 def servo_mod_set_zero(ser, control_mode_id: int, motor_id: int):

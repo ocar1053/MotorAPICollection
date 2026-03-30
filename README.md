@@ -1,10 +1,9 @@
-# xiaomi_motor — CubeMotor AK60 / AK70 API Collection
+# CubeMotor Motor API Collection
 
-A small Python API collection and example scripts for controlling CubeMotor
-Xiaomi AK60 and AK70 series motors using a Waveshare USB-to-CAN (USB-CAN)
-converter. The code provides helpers to build and send CAN frames over a
-serial bridge and implements the motor payload formats used by the firmware
-(MIT-style position commands and other control modes).
+A small Python API collection and GUI for controlling CubeMotor AK10-9 and
+AK70 series motors through a Waveshare USB-to-CAN bridge. The repository
+focuses on servo position, position-speed, zeroing, and current-brake
+commands used by the current tools and GUI.
 
 > IMPORTANT: Read the motor user manual and verify each motor's CAN ID before
 > connecting or operating the motor. Sending commands to the wrong device can
@@ -12,74 +11,66 @@ serial bridge and implements the motor payload formats used by the firmware
 
 ## Supported hardware
 
-- CubeMotor AK60 series
+- CubeMotor AK10-9 series
 - CubeMotor AK70 series
-- Waveshare USB-to-CAN (USB-CAN) converter (bridge packet format: `0xAA 0xE8 + ID + data + 0x55`)
+- Waveshare USB-to-CAN (USB-CAN) converter
 
 ## Supported software
 
 - Python 3.12
 - pyserial (listed in `requirement.txt`)
 
-
 ## Quick start (Windows PowerShell)
 
 1. Install Python 3.12 and verify it is available on `PATH`:
 
-```powershe
+```powershell
 python --version
 ```
 
-2. Create and activate a virtual environment (PowerShell):
+2. Create and activate a virtual environment:
 
-```powershe
+```powershell
 python -m venv venv
-\venv\Scripts\Activate.ps1
+.\venv\Scripts\Activate.ps1
 ```
 
+3. Install dependencies:
 
+```powershell
+pip install -r requirement.txt
+```
 
 ## Configuration
 
-- Edit the example scripts to set the correct serial port and CAN settings.
-  Examples: `SERIAL_PORT = 'COM6'` in `cubemotorAK60.py`, and `COM11` in
-  `cubemotorAK70.py` — change these to match the COM port shown in Device
-  Manager for your Waveshare USB-CAN device.
-- The scripts send a configuration frame to the Waveshare bridge on startup —
-  ensure the bridge is in normal operating mode and the desired CAN bitrate is
-  selected.
+- Update the example scripts to use the correct COM port for your
+  USB-to-CAN bridge.
+- Ensure the bridge is in normal operating mode with the expected CAN bitrate
+  before sending commands.
 
 ## Safety notes
 
-- The example scripts send real motor commands. Secure or unload the motor
-  before running sweeps.
-- Start with low PID gains and small target positions to avoid abrupt or
-  strong motion. Monitor current and temperature during tests.
-- These scripts assume specific bridge framing and motor firmware payloads —
-  they are not intended to be general-purpose CAN libraries.
+- The scripts send real motor commands. Secure or unload the motor before
+  running position tests.
+- Start with small target angles and conservative motion settings.
+- Monitor current and temperature during testing.
 
 ## Run an example
 
 ```powershell
-# AK60 sweep
-python cubemotorAK60.py
-
-# AK70 test
+# AK70 example
 python cubemotorAK70.py
 
-# Two-motor demo
-python xiaomi.py
+# Servo hold test
+python cubemotor_servo_hold_test.py --family ak70 --port COM12 --motor-id 93 --target-deg 10
+
+# GUI
+python robot_arm_gui.py
 ```
 
 ## Troubleshooting
 
-- If you receive no telemetry, verify wiring, CAN bitrate, motor ID, and the
-  converter mode (not loopback).
-- If parsing or framing errors appear, capture a serial hex dump and confirm
-  the bridge framing bytes (`0xAA 0xE8 ... 0x55`).
-
-## Contributing
-
-Small documentation or usability improvements are welcome. Please keep
-changes that affect motor safety or electrical behavior carefully reviewed.
-
+- If you receive no telemetry, verify wiring, CAN bitrate, motor ID, and
+  converter mode.
+- If framing errors appear, confirm the bridge packet format matches the
+  expected `0xAA ... 0x55` framing.
