@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import time
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict
 
@@ -11,7 +12,7 @@ from serial.tools import list_ports
 
 try:
     from PyQt6.QtCore import QSignalBlocker, QTimer, Qt, pyqtSignal
-    from PyQt6.QtGui import QFont
+    from PyQt6.QtGui import QFont, QIcon
     from PyQt6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -63,6 +64,7 @@ class FocusWheelDoubleSpinBox(QDoubleSpinBox):
             event.ignore()
 
 APP_TITLE = "Robotic Arm Safe Console"
+APP_ICON_PATH = Path(__file__).resolve().parent / "assets" / "logo.png"
 CAN_BAUDRATE = 2_000_000
 SERIAL_TIMEOUT = 0.05
 WRITE_TIMEOUT = 0.20
@@ -899,6 +901,8 @@ class MainWindow(QMainWindow):
         self._emergency_latched = False
         self._latest_states: Dict[str, MotorState] = {}
         self.setWindowTitle(APP_TITLE)
+        if APP_ICON_PATH.exists():
+            self.setWindowIcon(QIcon(str(APP_ICON_PATH)))
         self.resize(1480, 920)
         self._build_ui()
         self._apply_style()
@@ -1373,6 +1377,8 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    if APP_ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(APP_ICON_PATH)))
     window = MainWindow()
     window.show()
     return app.exec()
