@@ -966,42 +966,53 @@ class MainWindow(QMainWindow):
         panel = QFrame()
         panel.setObjectName("SideCard")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
 
         title = QLabel("System")
         title.setObjectName("SectionTitle")
         layout.addWidget(title)
 
         self.port_boxes: Dict[str, QComboBox] = {}
+        port_grid = QGridLayout()
+        port_grid.setHorizontalSpacing(10)
+        port_grid.setVerticalSpacing(8)
+        refresh_button = QPushButton("Refresh COM")
+        refresh_button.clicked.connect(self.refresh_ports)
+        refresh_button.setMaximumWidth(120)
         for bus_key in BUS_KEYS:
-            row = QHBoxLayout()
-            row.addWidget(QLabel("USB / COM" if len(BUS_KEYS) == 1 else f"Bus {bus_key}"))
+            row_index = len(self.port_boxes)
+            port_grid.addWidget(QLabel("USB / COM" if len(BUS_KEYS) == 1 else f"Bus {bus_key}"), row_index, 0)
             combo = QComboBox()
             combo.setEditable(True)
             combo.setMinimumWidth(140)
             combo.currentTextChanged.connect(lambda _text, b=bus_key: self._update_status_hint(b))
             self.port_boxes[bus_key] = combo
-            row.addWidget(combo, 1)
-            layout.addLayout(row)
-
-        refresh_button = QPushButton("Refresh COM")
-        refresh_button.clicked.connect(self.refresh_ports)
-        layout.addWidget(refresh_button)
+            port_grid.addWidget(combo, row_index, 1)
+        if len(BUS_KEYS) == 1:
+            port_grid.addWidget(refresh_button, 0, 2)
+        layout.addLayout(port_grid)
+        if len(BUS_KEYS) > 1:
+            layout.addWidget(refresh_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.arm_checkbox = QCheckBox("解除動作鎖定")
         self.arm_checkbox.toggled.connect(self._arm_toggled)
-        layout.addWidget(self.arm_checkbox)
 
         temp_row = QHBoxLayout()
+        temp_row.setSpacing(10)
+        temp_row.addWidget(self.arm_checkbox)
+        temp_row.addStretch(1)
         temp_row.addWidget(QLabel("Temp Limit"))
         self.temp_limit_spin = QSpinBox()
         self.temp_limit_spin.setRange(40, 120)
         self.temp_limit_spin.setValue(DEFAULT_TEMP_LIMIT_C)
+        self.temp_limit_spin.setFixedWidth(88)
         temp_row.addWidget(self.temp_limit_spin)
         layout.addLayout(temp_row)
 
         button_row = QGridLayout()
+        button_row.setHorizontalSpacing(10)
+        button_row.setVerticalSpacing(10)
         self.connect_button = QPushButton("Connect")
         self.disconnect_button = QPushButton("Disconnect")
         self.apply_all_button = QPushButton("Apply All")
@@ -1020,6 +1031,7 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.estop_button, 2, 0, 1, 2)
         layout.addLayout(button_row)
         layout.addStretch(1)
+        panel.setMaximumHeight(320)
         return panel
 
     def _build_log_panel(self) -> QWidget:
@@ -1027,8 +1039,8 @@ class MainWindow(QMainWindow):
         panel.setObjectName("SideCard")
         panel.setMaximumWidth(360)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(8)
 
         title = QLabel("Log")
         title.setObjectName("SectionTitle")
@@ -1041,10 +1053,11 @@ class MainWindow(QMainWindow):
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMinimumHeight(110)
-        self.log_view.setMaximumHeight(150)
+        self.log_view.setMinimumHeight(90)
+        self.log_view.setMaximumHeight(120)
         self.log_view.document().setMaximumBlockCount(60)
         layout.addWidget(self.log_view, 1)
+        panel.setMaximumHeight(220)
         return panel
 
     def _apply_style(self) -> None:
@@ -1074,7 +1087,7 @@ class MainWindow(QMainWindow):
                 background: #153252;
                 border: 1px solid rgba(255,255,255,0.10);
                 border-radius: 14px;
-                padding: 10px 14px;
+                padding: 8px 12px;
                 font-weight: 700;
             }
             QPushButton:hover { background: #1d456e; }
