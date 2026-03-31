@@ -38,6 +38,30 @@ except ImportError as exc:
 
 import cubemotorAK109Util as motor_proto
 
+
+class FocusWheelComboBox(QComboBox):
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class FocusWheelSpinBox(QSpinBox):
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class FocusWheelDoubleSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
 APP_TITLE = "Robotic Arm Safe Console"
 CAN_BAUDRATE = 2_000_000
 SERIAL_TIMEOUT = 0.05
@@ -641,7 +665,7 @@ class MotorCard(QFrame):
         layout.addLayout(range_row)
 
         target_row = QHBoxLayout()
-        self.target_spin = QDoubleSpinBox()
+        self.target_spin = FocusWheelDoubleSpinBox()
         self.target_spin.setDecimals(1)
         self.target_spin.setSingleStep(0.5)
         self.target_spin.valueChanged.connect(self._on_target_spin_changed)
@@ -690,19 +714,19 @@ class MotorCard(QFrame):
         return value
 
     def _bus_combo(self) -> QComboBox:
-        combo = QComboBox()
+        combo = FocusWheelComboBox()
         combo.addItems(BUS_KEYS)
         combo.currentTextChanged.connect(self._emit_spec_changed)
         return combo
 
     def _id_spinbox(self) -> QSpinBox:
-        spin = QSpinBox()
+        spin = FocusWheelSpinBox()
         spin.setRange(0, 255)
         spin.valueChanged.connect(self._emit_spec_changed)
         return spin
 
     def _limit_spinbox(self) -> QDoubleSpinBox:
-        spin = QDoubleSpinBox()
+        spin = FocusWheelDoubleSpinBox()
         spin.setRange(motor_proto.SAFE_POS_DEG_MIN, motor_proto.SAFE_POS_DEG_MAX)
         spin.setDecimals(1)
         spin.setSingleStep(1.0)
@@ -710,7 +734,7 @@ class MotorCard(QFrame):
         return spin
 
     def _command_spinbox(self, minimum: int, maximum: int, step: int) -> QSpinBox:
-        spin = QSpinBox()
+        spin = FocusWheelSpinBox()
         spin.setRange(minimum, maximum)
         spin.setSingleStep(step)
         spin.valueChanged.connect(self._emit_spec_changed)
