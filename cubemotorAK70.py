@@ -44,8 +44,9 @@ def main():
 
     # start serial listener
     listener = SerialCanListener(ser)
-    servo_mod_set_zero(ser, control_mode_id=5, motor_id=MOTOR_ID)
-    print("set to zero")
+    # Zero-on-start disabled to avoid overwriting the stored origin.
+    # servo_mod_set_zero(ser, control_mode_id=5, motor_id=MOTOR_ID)
+    # print("set to zero")
 
     time.sleep(1)  # wait for the motor to set to zero
     pos, spd, cur, temp, err, can_id = listener.get_status()
