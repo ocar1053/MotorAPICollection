@@ -91,8 +91,8 @@ class MotorState:
 
 
 DEFAULT_MOTORS = [
-    MotorSpec("joint_a", "Joint A", "AK10-9", "A", 0, -45.0, 0, 4_000, 12_000, 2.0, "#35c2a1"),
-    MotorSpec("joint_b", "Joint B", "AK10-9", "A", 1, -45.0, 45, 4_000, 12_000, 2.0, "#ff8f3d"),
+    MotorSpec("joint_a", "Joint A", "AK10-9", "A", 0, -60.0, 0, 4_000, 12_000, 2.0, "#35c2a1"),
+    MotorSpec("joint_b", "Joint B", "AK10-9", "A", 1, -75.0, 75, 4_000, 12_000, 2.0, "#ff8f3d"),
     MotorSpec("joint_c", "Joint C", "AK70", "A", 93, -90.0, 90.0, 4_000, 12_000, 2.0, "#5bbcff"),
 ]
 
