@@ -10,6 +10,16 @@ from typing import Dict
 import serial
 from serial.tools import list_ports
 
+from robot_arm_runtime import (
+    BUS_KEYS as RUNTIME_BUS_KEYS,
+    DEFAULT_MOTORS as RUNTIME_DEFAULT_MOTORS,
+    DEFAULT_PORTS as RUNTIME_DEFAULT_PORTS,
+    DEFAULT_TEMP_LIMIT_C as RUNTIME_DEFAULT_TEMP_LIMIT_C,
+    HOLD_KEEPALIVE_MS as RUNTIME_HOLD_KEEPALIVE_MS,
+    SLIDER_SCALE as RUNTIME_SLIDER_SCALE,
+    STATUS_POLL_MS as RUNTIME_STATUS_POLL_MS,
+)
+
 try:
     from PyQt6.QtCore import QSignalBlocker, QTimer, Qt, pyqtSignal
     from PyQt6.QtGui import QFont, QIcon
@@ -68,19 +78,19 @@ APP_ICON_PATH = Path(__file__).resolve().parent / "assets" / "logo.png"
 CAN_BAUDRATE = 2_000_000
 SERIAL_TIMEOUT = 0.05
 WRITE_TIMEOUT = 0.20
-STATUS_POLL_MS = 150
+STATUS_POLL_MS = RUNTIME_STATUS_POLL_MS
 COMMAND_RATE_LIMIT_S = 0.08
 SAFE_HOLD_SPEED_ERPM = 3_000
 SAFE_HOLD_RPA = 10_000
-HOLD_KEEPALIVE_MS = 100
+HOLD_KEEPALIVE_MS = RUNTIME_HOLD_KEEPALIVE_MS
 AUTO_HOLD_POSITION_TOLERANCE_DEG = 0.5
 AUTO_HOLD_SPEED_TOLERANCE_ERPM = 300.0
 ZERO_VERIFY_TOLERANCE_DEG = 2.0
 ZERO_VERIFY_TIMEOUT_S = 1.5
 ZERO_COMMAND_SETTLE_S = 0.15
-DEFAULT_TEMP_LIMIT_C = 70
-SLIDER_SCALE = 10
-BUS_KEYS = ("A",)
+DEFAULT_TEMP_LIMIT_C = RUNTIME_DEFAULT_TEMP_LIMIT_C
+SLIDER_SCALE = RUNTIME_SLIDER_SCALE
+BUS_KEYS = RUNTIME_BUS_KEYS
 
 
 @dataclass
@@ -116,13 +126,9 @@ class MotorState:
     auto_hold_engaged: bool = False
 
 
-DEFAULT_MOTORS = [
-    MotorSpec("joint_a", "Joint A", "AK10-9", "A", 0, -60.0, 0, 4_000, 12_000, 2.0, "#35c2a1"),
-    MotorSpec("joint_b", "Joint B", "AK10-9", "A", 1, -75.0, 75, 4_000, 12_000, 2.0, "#ff8f3d"),
-    MotorSpec("joint_c", "Joint C", "AK70", "A", 93, -90.0, 90.0, 4_000, 12_000, 2.0, "#5bbcff"),
-]
+DEFAULT_MOTORS = [MotorSpec(**vars(spec)) for spec in RUNTIME_DEFAULT_MOTORS]
 
-DEFAULT_PORTS = {"A": "COM12"}
+DEFAULT_PORTS = dict(RUNTIME_DEFAULT_PORTS)
 
 
 def clamp(value: float, lower: float, upper: float) -> float:

@@ -1,2 +1,5 @@
 pyserial
 PyQt6
+mediapipe==0.10.14
+opencv-python
+numpy
