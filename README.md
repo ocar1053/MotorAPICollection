@@ -67,6 +67,71 @@ python cubemotor_servo_hold_test.py --family ak70 --port COM12 --motor-id 93 --t
 
 # GUI
 python robot_arm_gui.py
+
+# MediaPipe webcam preview only
+python robot_arm_mediapipe_control.py --camera 0
+
+# MediaPipe with two webcams and real robot follow
+python robot_arm_mediapipe_control.py --camera 0 --camera 1 --arm --port COM12
+
+# RealSense D455 preview only
+python robot_arm_realsense_control.py --side right
+
+# RealSense D455 with real robot follow
+python robot_arm_realsense_control.py --side right --arm --port COM12
+```
+
+## MediaPipe arm follow
+
+- `robot_arm_mediapipe_control.py` is intentionally separate from the GUI.
+- Default mapping is:
+  - `joint_a` <- shoulder pitch from the tracked shoulder side
+  - `joint_b` <- shoulder yaw from the same shoulder side
+  - `joint_c` <- elbow yaw from the tracked elbow side
+- Default tracked side is the left arm, matching MediaPipe landmarks `11 -> 13 -> 15`.
+- Press `c` to recalibrate your current body pose as the robot neutral pose.
+- Press `q` or `Esc` to stop.
+- Start without `--arm` first so you can verify the on-screen angles before moving the real hardware.
+
+## RealSense D455 arm follow
+
+- `robot_arm_realsense_control.py` is a separate D455-specific script.
+- It still uses MediaPipe Pose for 2D landmark detection, but then samples aligned
+  RealSense depth around the shoulder, elbow, and wrist landmarks to recover
+  camera-space 3D points.
+- This is especially useful for `joint_c` / motor ID `93`, where a plain RGB
+  webcam can struggle with forearm yaw.
+- Start with preview-only first:
+
+```powershell
+python robot_arm_realsense_control.py --side right
+```
+
+- To capture a reusable neutral calibration file, stand in your normal exhibit pose
+  and save the first valid calibration:
+
+```powershell
+python robot_arm_realsense_control.py --side right --save-calibration realsense_calibration.json
+```
+
+- On later runs, reuse that saved calibration so startup skips first-pose
+  auto-calibration:
+
+```powershell
+python robot_arm_realsense_control.py --side right --load-calibration realsense_calibration.json
+```
+
+- If you want to load an existing calibration and keep updating the same file when
+  you press `n` / `p` / `b` / `c`, pass both flags:
+
+```powershell
+python robot_arm_realsense_control.py --side right --load-calibration realsense_calibration.json --save-calibration realsense_calibration.json
+```
+
+- Then arm the real robot only after the depth-based angles look stable:
+
+```powershell
+python robot_arm_realsense_control.py --side right --arm --port COM12
 ```
 
 ## Troubleshooting

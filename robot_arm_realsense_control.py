@@ -8,11 +8,13 @@ especially for joint_c / motor ID 93.
 """
 
 import argparse
+import json
 import math
 import sys
 import time
 import warnings
 from dataclasses import replace
+from pathlib import Path
 
 import cv2
 import mediapipe as mp
@@ -434,6 +436,16 @@ def parse_args() -> argparse.Namespace:
         help="Optional RealSense serial number if more than one device is connected.",
     )
     parser.add_argument(
+        "--load-calibration",
+        default=None,
+        help="Load a saved calibration JSON file at startup and skip first-pose auto-calibration.",
+    )
+    parser.add_argument(
+        "--save-calibration",
+        default=None,
+        help="Save captured calibration updates to this JSON file.",
+    )
+    parser.add_argument(
         "--mirror",
         action="store_true",
         help="Mirror the preview window for easier self-view. Tracking still uses the original frame.",
@@ -615,19 +627,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--joint-a-gain",
         type=float,
-        default=0.70,
+        default=1.0,
         help="Scale from human shoulder pitch delta to joint_a delta.",
     )
     parser.add_argument(
         "--joint-b-gain",
         type=float,
-        default=0.85,
+        default=1.0,
         help="Scale from human shoulder yaw delta to joint_b delta.",
     )
     parser.add_argument(
         "--joint-c-gain",
         type=float,
-        default=0.85,
+        default=1.0,
         help="Scale from human elbow yaw delta to joint_c delta.",
     )
     parser.add_argument(
@@ -761,6 +773,61 @@ def update_calibration(
     )
 
 
+def format_calibration(calibration: Calibration) -> str:
+    return (
+        f"pitch={calibration.shoulder_pitch_deg:+.1f}, "
+        f"shoulder_yaw={calibration.shoulder_yaw_deg:+.1f}, "
+        f"elbow_yaw={calibration.elbow_yaw_deg:+.1f}"
+    )
+
+
+def load_calibration_file(path_str: str) -> tuple[Calibration, Path]:
+    path = Path(path_str).expanduser()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SystemExit(f"Calibration file not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Calibration file is not valid JSON: {path} ({exc})") from exc
+
+    required_keys = ("shoulder_pitch_deg", "shoulder_yaw_deg", "elbow_yaw_deg")
+    missing = [key for key in required_keys if key not in payload]
+    if missing:
+        raise SystemExit(f"Calibration file {path} is missing keys: {', '.join(missing)}")
+
+    try:
+        calibration = Calibration(
+            shoulder_pitch_deg=float(payload["shoulder_pitch_deg"]),
+            shoulder_yaw_deg=float(payload["shoulder_yaw_deg"]),
+            elbow_yaw_deg=float(payload["elbow_yaw_deg"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"Calibration file {path} contains non-numeric calibration values.") from exc
+
+    return calibration, path
+
+
+def save_calibration_file(path_str: str, calibration: Calibration, side: str) -> Path:
+    path = Path(path_str).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "format": "robot_arm_realsense_calibration_v1",
+        "side": side,
+        "shoulder_pitch_deg": calibration.shoulder_pitch_deg,
+        "shoulder_yaw_deg": calibration.shoulder_yaw_deg,
+        "elbow_yaw_deg": calibration.elbow_yaw_deg,
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def persist_calibration_if_requested(args: argparse.Namespace, calibration: Calibration) -> None:
+    if not args.save_calibration:
+        return
+    path = save_calibration_file(args.save_calibration, calibration, args.side)
+    print(f"[calibration] saved to {path}")
+
+
 def main() -> int:
     args = parse_args()
     motor_specs = build_motor_specs(args)
@@ -874,6 +941,9 @@ def main() -> int:
         )
 
         calibration: Calibration | None = None
+        if args.load_calibration:
+            calibration, loaded_path = load_calibration_file(args.load_calibration)
+            print(f"[calibration] loaded from {loaded_path}: {format_calibration(calibration)}")
         last_sent_at = 0.0
         last_poll_at = 0.0
         send_interval_s = max(0.0, args.send_interval_ms / 1000.0)
@@ -920,13 +990,9 @@ def main() -> int:
                 )
                 if pid_controller is not None:
                     pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
+                persist_calibration_if_requested(args, calibration)
                 print()
-                print(
-                    "[calibration] captured neutral pose: "
-                    f"pitch={calibration.shoulder_pitch_deg:+.1f}, "
-                    f"shoulder_yaw={calibration.shoulder_yaw_deg:+.1f}, "
-                    f"elbow_yaw={calibration.elbow_yaw_deg:+.1f}"
-                )
+                print(f"[calibration] captured neutral pose: {format_calibration(calibration)}")
 
             joint_targets = None
             if raw_pose is not None and calibration is not None:
@@ -1039,13 +1105,9 @@ def main() -> int:
                     home_targets = current_robot_home(controller)
                 if pid_controller is not None:
                     pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
+                persist_calibration_if_requested(args, calibration)
                 print()
-                print(
-                    "[calibration] reset neutral pose: "
-                    f"pitch={calibration.shoulder_pitch_deg:+.1f}, "
-                    f"shoulder_yaw={calibration.shoulder_yaw_deg:+.1f}, "
-                    f"elbow_yaw={calibration.elbow_yaw_deg:+.1f}"
-                )
+                print(f"[calibration] reset neutral pose: {format_calibration(calibration)}")
             if key == ord("p") and raw_pose is not None:
                 calibration = update_calibration(
                     calibration,
@@ -1056,6 +1118,7 @@ def main() -> int:
                 )
                 if pid_controller is not None:
                     pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
+                persist_calibration_if_requested(args, calibration)
                 print()
                 print(f"[calibration] updated joint_a baseline to pitch={calibration.shoulder_pitch_deg:+.1f}")
             if key == ord("b") and raw_pose is not None:
@@ -1068,6 +1131,7 @@ def main() -> int:
                 )
                 if pid_controller is not None:
                     pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
+                persist_calibration_if_requested(args, calibration)
                 print()
                 print(f"[calibration] updated joint_b baseline to shoulder_yaw={calibration.shoulder_yaw_deg:+.1f}")
             if key == ord("c") and raw_pose is not None:
@@ -1080,6 +1144,7 @@ def main() -> int:
                 )
                 if pid_controller is not None:
                     pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
+                persist_calibration_if_requested(args, calibration)
                 print()
                 print(f"[calibration] updated joint_c baseline to elbow_yaw={calibration.elbow_yaw_deg:+.1f}")
 
