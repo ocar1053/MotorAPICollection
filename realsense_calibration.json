@@ -1,7 +1,7 @@
 {
   "format": "robot_arm_realsense_calibration_v1",
   "side": "right",
-  "shoulder_pitch_deg": -76.83494683824242,
-  "shoulder_yaw_deg": -12.494752374895596,
+  "shoulder_pitch_deg": -67.81603109988376,
+  "shoulder_yaw_deg": -19.46626595776077,
   "elbow_yaw_deg": 0.0
 }

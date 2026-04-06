@@ -32,7 +32,6 @@ from robot_arm_mediapipe_control import (
     Calibration,
     EMAJointFilter,
     ExponentialSmoother,
-    JointPIDController,
     JointRateLimiter,
     JointTargets,
     OneEuroJointFilter,
@@ -41,7 +40,6 @@ from robot_arm_mediapipe_control import (
     body_pitch_deg,
     body_yaw_deg,
     build_motor_specs,
-    current_joint_measurement,
     current_robot_home,
     draw_arm_skeleton,
     initialize_controller,
@@ -55,7 +53,12 @@ from robot_arm_mediapipe_control import (
     selected_arm_indices,
     signed_horizontal_angle_deg,
 )
-from robot_arm_runtime import DEFAULT_PORTS, DEFAULT_TEMP_LIMIT_C
+from robot_arm_runtime import (
+    DEFAULT_PORTS,
+    DEFAULT_TEMP_LIMIT_C,
+    ZERO_VERIFY_TIMEOUT_S,
+    ZERO_VERIFY_TOLERANCE_DEG,
+)
 
 warnings.filterwarnings(
     "ignore",
@@ -541,12 +544,6 @@ def parse_args() -> argparse.Namespace:
         help="Exponential smoothing factor in [0, 1]. Higher follows faster.",
     )
     parser.add_argument(
-        "--control-mode",
-        choices=("direct", "pid"),
-        default="direct",
-        help="`direct` sends filtered targets straight to the arm. `pid` adds an outer PID loop.",
-    )
-    parser.add_argument(
         "--temporal-filter",
         choices=("none", "ema", "oneeuro"),
         default="oneeuro",
@@ -599,30 +596,6 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Maximum speed for joint_c target changes in deg/s. Set 0 to disable software rate limiting.",
-    )
-    parser.add_argument(
-        "--pid-kp",
-        type=float,
-        default=0.40,
-        help="PID proportional gain for joint target tracking when --control-mode pid is used.",
-    )
-    parser.add_argument(
-        "--pid-ki",
-        type=float,
-        default=0.02,
-        help="PID integral gain for joint target tracking when --control-mode pid is used.",
-    )
-    parser.add_argument(
-        "--pid-kd",
-        type=float,
-        default=0.05,
-        help="PID derivative gain for joint target tracking when --control-mode pid is used.",
-    )
-    parser.add_argument(
-        "--pid-integral-limit",
-        type=float,
-        default=25.0,
-        help="Clamp integral accumulation to avoid PID wind-up.",
     )
     parser.add_argument(
         "--joint-a-gain",
@@ -747,8 +720,135 @@ def ramp_robot_to_zero(controller, duration_s: float, step_s: float = 0.05) -> N
         controller.refresh_states()
         controller.maintain_target_holds()
         time.sleep(duration_s / steps)
-    apply_joint_targets(controller, end)
-    time.sleep(0.15)
+    verify_zero_target(
+        controller,
+        tolerance_deg=ZERO_VERIFY_TOLERANCE_DEG,
+        timeout_s=max(ZERO_VERIFY_TIMEOUT_S, duration_s * 2.0),
+        step_s=max(0.05, step_s),
+    )
+
+
+def command_all_home_zero(controller) -> None:
+    for key in ("joint_a", "joint_b", "joint_c"):
+        controller.command_home_zero(key)
+
+
+def verify_zero_target(
+    controller,
+    tolerance_deg: float,
+    timeout_s: float,
+    step_s: float,
+) -> None:
+    stalled_timeout_s = max(0.5, timeout_s)
+    joint_keys = ("joint_a", "joint_b", "joint_c")
+    best_total_abs = float("inf")
+    last_progress_at = time.time()
+    progress_epsilon_deg = 0.02
+
+    while True:
+        command_all_home_zero(controller)
+        states = controller.refresh_states()
+        controller.maintain_target_holds()
+
+        valid_states = [
+            states[key]
+            for key in joint_keys
+            if key in states and states[key].telemetry_ok
+        ]
+
+        if len(valid_states) == len(joint_keys) and all(
+            abs(state.position) <= tolerance_deg for state in valid_states
+        ):
+            print(f"[exit] zero confirmed within +/-{tolerance_deg:.1f} deg")
+            return
+
+        if len(valid_states) == len(joint_keys):
+            current_total_abs = sum(abs(state.position) for state in valid_states)
+            if current_total_abs < best_total_abs - progress_epsilon_deg:
+                best_total_abs = current_total_abs
+                last_progress_at = time.time()
+
+        if time.time() - last_progress_at > stalled_timeout_s:
+            break
+
+        time.sleep(step_s)
+
+    states = controller.refresh_states()
+    positions = ", ".join(
+        f"{key}={states[key].position:+.2f}"
+        for key in joint_keys
+        if key in states
+    )
+    raise RuntimeError(
+        "Zero confirmation stalled before reaching 0. "
+        f"Latest positions: {positions}"
+    )
+
+
+def joint_temperature_snapshot(
+    controller,
+    cached: dict[str, float | None] | None = None,
+) -> dict[str, float | None]:
+    snapshot = dict(cached or {})
+    for key in ("joint_a", "joint_b", "joint_c"):
+        snapshot.setdefault(key, None)
+    if controller is None:
+        return snapshot
+    for key in ("joint_a", "joint_b", "joint_c"):
+        state = controller.states.get(key)
+        if state is not None and state.telemetry_ok:
+            snapshot[key] = float(state.temperature)
+    return snapshot
+
+
+def format_temperature_line(temperatures: dict[str, float | None]) -> str:
+    labels = {
+        "joint_a": "A",
+        "joint_b": "B",
+        "joint_c": "C",
+    }
+    parts = []
+    for key in ("joint_a", "joint_b", "joint_c"):
+        value = temperatures.get(key)
+        value_text = "--" if value is None else f"{value:.1f}C"
+        parts.append(f"{labels[key]} {value_text}")
+    return "temp " + " | ".join(parts)
+
+
+def robot_status_line(controller, follow_enabled: bool, port_closed: bool) -> str:
+    if controller is None:
+        return "robot port closed" if port_closed else "preview only"
+    if follow_enabled:
+        return "robot connected | follow enabled"
+    return "robot connected | follow paused"
+
+
+def annotate_runtime_footer(
+    frame: np.ndarray,
+    *,
+    controller,
+    follow_enabled: bool,
+    port_closed: bool,
+    temperatures: dict[str, float | None],
+) -> np.ndarray:
+    lines = [
+        robot_status_line(controller, follow_enabled=follow_enabled, port_closed=port_closed),
+        format_temperature_line(temperatures),
+    ]
+    base_y = frame.shape[0] - 18
+    for line_index, line in enumerate(reversed(lines)):
+        y = base_y - line_index * 24
+        cv2.putText(
+            frame,
+            line,
+            (18, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.62,
+            (245, 245, 245),
+            2,
+            cv2.LINE_AA,
+        )
+    return frame
 
 
 def update_calibration(
@@ -834,6 +934,12 @@ def main() -> int:
     limits_by_key = {spec.key: spec for spec in motor_specs}
     tracker: RealSenseTracker | None = None
     controller = None
+    port_closed = False
+    temperatures = {
+        "joint_a": None,
+        "joint_b": None,
+        "joint_c": None,
+    }
     window_name = "Robot Arm RealSense D455 Control"
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -855,6 +961,7 @@ def main() -> int:
     try:
         if args.arm:
             controller, home_targets = arm_robot(args.port, motor_specs)
+            temperatures = joint_temperature_snapshot(controller, temperatures)
             follow_enabled = True
         else:
             home_targets = JointTargets(0.0, 0.0, 0.0)
@@ -881,7 +988,7 @@ def main() -> int:
         )
         print(
             "[control] "
-            f"mode={args.control_mode} "
+            "mode=direct "
             f"send_interval_ms={args.send_interval_ms:.0f}"
         )
         if any(rate > 0.0 for rate in (args.joint_a_max_deg_s, args.joint_b_max_deg_s, args.joint_c_max_deg_s)):
@@ -900,14 +1007,6 @@ def main() -> int:
             f"oneeuro_min_cutoff={args.oneeuro_min_cutoff:.2f} "
             f"oneeuro_beta={args.oneeuro_beta:.2f}"
         )
-        if args.control_mode == "pid":
-            print(
-                "[pid] "
-                f"kp={args.pid_kp:.3f} "
-                f"ki={args.pid_ki:.3f} "
-                f"kd={args.pid_kd:.3f} "
-                f"integral_limit={args.pid_integral_limit:.1f}"
-            )
         print(
             "[mapping] "
             f"side={args.side} "
@@ -916,20 +1015,13 @@ def main() -> int:
             f"joint_c_sign={args.joint_c_sign:+.1f}"
         )
         print(f"[safety] temp_limit={DEFAULT_TEMP_LIMIT_C:.1f}C")
-        print("[input] press p for joint_a, b for joint_b, c for joint_c, n for full neutral, a to arm/toggle follow, q to quit.")
+        print(
+            "[input] press p for joint_a, b for joint_b, c for joint_c, "
+            "n for full neutral, a to arm/toggle follow, y to ramp to zero and close the port, q to quit."
+        )
 
         smoother = ExponentialSmoother(alpha=args.smoothing)
         temporal_filter = build_temporal_filter(args)
-        pid_controller = (
-            JointPIDController(
-                kp=args.pid_kp,
-                ki=args.pid_ki,
-                kd=args.pid_kd,
-                integral_limit=args.pid_integral_limit,
-            )
-            if args.control_mode == "pid"
-            else None
-        )
         rate_limiter = (
             JointRateLimiter(
                 joint_a_max_deg_s=args.joint_a_max_deg_s,
@@ -962,6 +1054,13 @@ def main() -> int:
                     2,
                     cv2.LINE_AA,
                 )
+                blank = annotate_runtime_footer(
+                    frame=blank,
+                    controller=controller,
+                    follow_enabled=follow_enabled,
+                    port_closed=port_closed,
+                    temperatures=temperatures,
+                )
                 cv2.imshow(window_name, blank)
                 if cv2.waitKey(1) & 0xFF in (27, ord("q")):
                     break
@@ -988,8 +1087,6 @@ def main() -> int:
                     shoulder_yaw_deg=raw_pose.shoulder_yaw_deg,
                     elbow_yaw_deg=raw_pose.elbow_yaw_deg,
                 )
-                if pid_controller is not None:
-                    pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
                 persist_calibration_if_requested(args, calibration)
                 print()
                 print(f"[calibration] captured neutral pose: {format_calibration(calibration)}")
@@ -1011,12 +1108,6 @@ def main() -> int:
                         filtered_targets = temporal_filter.update(filtered_targets)
 
                 control_targets = filtered_targets
-                if pid_controller is not None:
-                    control_targets = pid_controller.update(
-                        filtered_targets,
-                        measured=current_joint_measurement(controller),
-                        now_ts=time.time(),
-                    )
                 if rate_limiter is not None:
                     control_targets = rate_limiter.update(control_targets, now_ts=time.time())
                 joint_targets = control_targets
@@ -1033,6 +1124,7 @@ def main() -> int:
             if controller is not None:
                 if now - last_poll_at >= 0.15:
                     safety_check(controller)
+                    temperatures = joint_temperature_snapshot(controller, temperatures)
                     for key in ("joint_a", "joint_b", "joint_c"):
                         controller.try_auto_hold(key)
                     last_poll_at = now
@@ -1067,6 +1159,13 @@ def main() -> int:
                 joint_targets=joint_targets,
                 status_text=status_text,
             )
+            display_frame = annotate_runtime_footer(
+                frame=display_frame,
+                controller=controller,
+                follow_enabled=follow_enabled,
+                port_closed=port_closed,
+                temperatures=temperatures,
+            )
             cv2.imshow(window_name, display_frame)
 
             key = cv2.waitKey(1) & 0xFF
@@ -1078,21 +1177,51 @@ def main() -> int:
                         print("[robot] calibrate first, then press a to arm.")
                     else:
                         controller, home_targets = arm_robot(args.port, motor_specs)
+                        temperatures = joint_temperature_snapshot(controller, temperatures)
                         follow_enabled = True
-                        if pid_controller is not None:
-                            pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
+                        port_closed = False
                 else:
                     follow_enabled = not follow_enabled
                     if follow_enabled:
                         print("[robot] follow enabled")
-                        if pid_controller is not None:
-                            pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
                     else:
                         print("[robot] follow paused")
                         try:
                             controller.hold_all()
                         except Exception:
                             pass
+            if key == ord("y"):
+                if controller is None:
+                    print("[robot] port is already closed.")
+                else:
+                    print("[robot] ramping to zero, then closing the port...")
+                    shutdown_error: Exception | None = None
+                    try:
+                        follow_enabled = False
+                        controller.refresh_states()
+                        temperatures = joint_temperature_snapshot(controller, temperatures)
+                        ramp_robot_to_zero(controller, duration_s=args.return_zero_seconds)
+                        controller.refresh_states()
+                        temperatures = joint_temperature_snapshot(controller, temperatures)
+                    except Exception as exc:
+                        shutdown_error = exc
+                    if shutdown_error is None:
+                        try:
+                            controller.disconnect_all()
+                        except Exception:
+                            pass
+                        controller = None
+                        port_closed = True
+                        home_targets = JointTargets(0.0, 0.0, 0.0)
+                        last_sent_at = 0.0
+                        last_poll_at = 0.0
+                        print("[robot] robot returned to zero and the port was closed. Press a to arm again.")
+                    else:
+                        try:
+                            controller.hold_all()
+                        except Exception:
+                            pass
+                        print(f"[robot] zero not confirmed, port kept open: {shutdown_error}")
             if key == ord("n") and raw_pose is not None:
                 calibration = update_calibration(
                     calibration,
@@ -1103,8 +1232,6 @@ def main() -> int:
                 )
                 if controller is not None:
                     home_targets = current_robot_home(controller)
-                if pid_controller is not None:
-                    pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
                 persist_calibration_if_requested(args, calibration)
                 print()
                 print(f"[calibration] reset neutral pose: {format_calibration(calibration)}")
@@ -1116,8 +1243,6 @@ def main() -> int:
                     update_shoulder_yaw=False,
                     update_elbow_yaw=False,
                 )
-                if pid_controller is not None:
-                    pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
                 persist_calibration_if_requested(args, calibration)
                 print()
                 print(f"[calibration] updated joint_a baseline to pitch={calibration.shoulder_pitch_deg:+.1f}")
@@ -1129,8 +1254,6 @@ def main() -> int:
                     update_shoulder_yaw=True,
                     update_elbow_yaw=False,
                 )
-                if pid_controller is not None:
-                    pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
                 persist_calibration_if_requested(args, calibration)
                 print()
                 print(f"[calibration] updated joint_b baseline to shoulder_yaw={calibration.shoulder_yaw_deg:+.1f}")
@@ -1142,8 +1265,6 @@ def main() -> int:
                     update_shoulder_yaw=False,
                     update_elbow_yaw=True,
                 )
-                if pid_controller is not None:
-                    pid_controller.reset(output=current_joint_measurement(controller) or home_targets)
                 persist_calibration_if_requested(args, calibration)
                 print()
                 print(f"[calibration] updated joint_c baseline to elbow_yaw={calibration.elbow_yaw_deg:+.1f}")

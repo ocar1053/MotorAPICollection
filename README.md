@@ -79,6 +79,12 @@ python robot_arm_realsense_control.py --side right
 
 # RealSense D455 with real robot follow
 python robot_arm_realsense_control.py --side right --arm --port COM12
+
+# Dual RealSense D455 fusion preview
+python robot_arm_dual_realsense_control.py --side right
+
+# Dual RealSense D455 fusion with pinned serial numbers
+python robot_arm_dual_realsense_control.py --side right --serial-number 1234567890 --serial-number 0987654321 --arm --port COM12
 ```
 
 ## MediaPipe arm follow
@@ -121,18 +127,12 @@ python robot_arm_realsense_control.py --side right --save-calibration realsense_
 python robot_arm_realsense_control.py --side right --load-calibration realsense_calibration.json
 ```
 
-- If you want to load an existing calibration and keep updating the same file when
-  you press `n` / `p` / `b` / `c`, pass both flags:
 
-```powershell
-python robot_arm_realsense_control.py --side right --load-calibration realsense_calibration.json --save-calibration realsense_calibration.json
-```
 
-- Then arm the real robot only after the depth-based angles look stable:
 
-```powershell
-python robot_arm_realsense_control.py --side right --arm --port COM12
-```
+
+
+
 
 ## Troubleshooting
 
